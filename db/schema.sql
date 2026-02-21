@@ -1,0 +1,3 @@
+-- Canonical SQL schema snapshot.
+-- Source of truth in runtime is db/schema.js (ensureSchema).
+-- Keep this file updated when making schema changes.
