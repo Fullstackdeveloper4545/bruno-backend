@@ -8,8 +8,6 @@ CREATE TABLE IF NOT EXISTS users (
     password TEXT,
     password_hash TEXT,
     is_verified BOOLEAN DEFAULT TRUE,
-    otp_code VARCHAR(10),
-    otp_expires_at TIMESTAMP,
     role VARCHAR(50) NOT NULL DEFAULT 'admin' CHECK (role IN ('super_admin', 'admin', 'store_manager')),
     store_id INTEGER,
     is_active BOOLEAN DEFAULT TRUE,
@@ -202,8 +200,8 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE TABLE IF NOT EXISTS order_items (
   id SERIAL PRIMARY KEY,
   order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
-  variant_id INTEGER REFERENCES product_variants(id) ON DELETE SET NULL,
+  product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+  variant_id UUID REFERENCES product_variants(id) ON DELETE SET NULL,
   product_name TEXT NOT NULL,
   sku TEXT,
   quantity INTEGER NOT NULL,
@@ -277,7 +275,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 
 CREATE TABLE IF NOT EXISTS report_schedules (
   id SERIAL PRIMARY KEY,
-  store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
   report_type TEXT NOT NULL DEFAULT 'pending_orders',
   send_time_utc TEXT NOT NULL DEFAULT '09:00',
   recipient_email TEXT NOT NULL,
@@ -325,6 +323,104 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_pt VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_es VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS image_url TEXT`);
+  // Upgrade legacy FK column types to UUID so they match current primary keys.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'order_items'
+          AND column_name = 'product_id'
+          AND data_type <> 'uuid'
+      ) THEN
+        ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_product_id_fkey;
+        ALTER TABLE order_items
+        ALTER COLUMN product_id TYPE UUID
+        USING CASE
+          WHEN product_id IS NULL THEN NULL
+          WHEN product_id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+            THEN product_id::text::uuid
+          ELSE NULL
+        END;
+      END IF;
+    END $$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'order_items'
+          AND column_name = 'variant_id'
+          AND data_type <> 'uuid'
+      ) THEN
+        ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_variant_id_fkey;
+        ALTER TABLE order_items
+        ALTER COLUMN variant_id TYPE UUID
+        USING CASE
+          WHEN variant_id IS NULL THEN NULL
+          WHEN variant_id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+            THEN variant_id::text::uuid
+          ELSE NULL
+        END;
+      END IF;
+    END $$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'report_schedules'
+          AND column_name = 'store_id'
+          AND data_type <> 'uuid'
+      ) THEN
+        ALTER TABLE report_schedules DROP CONSTRAINT IF EXISTS report_schedules_store_id_fkey;
+        ALTER TABLE report_schedules
+        ALTER COLUMN store_id TYPE UUID
+        USING CASE
+          WHEN store_id IS NULL THEN NULL
+          WHEN store_id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+            THEN store_id::text::uuid
+          ELSE NULL
+        END;
+      END IF;
+    END $$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'order_items_product_id_fkey'
+      ) THEN
+        ALTER TABLE order_items
+        ADD CONSTRAINT order_items_product_id_fkey
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'order_items_variant_id_fkey'
+      ) THEN
+        ALTER TABLE order_items
+        ADD CONSTRAINT order_items_variant_id_fkey
+        FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'report_schedules_store_id_fkey'
+      ) THEN
+        ALTER TABLE report_schedules
+        ADD CONSTRAINT report_schedules_store_id_fkey
+        FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `);
   // Ensure store routing columns exist across legacy DBs.
   await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS region_district VARCHAR(100)`);
   await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS priority_level INTEGER DEFAULT 1`);
