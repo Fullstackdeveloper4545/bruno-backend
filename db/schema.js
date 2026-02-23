@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS regions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS geocode_cache (
+    query_key TEXT PRIMARY KEY,
+    query_raw TEXT,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    provider TEXT DEFAULT 'nominatim',
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
 
 CREATE TABLE IF NOT EXISTS store_regions (
   id SERIAL PRIMARY KEY,
@@ -193,6 +202,7 @@ CREATE TABLE IF NOT EXISTS orders (
   shipping_status TEXT NOT NULL DEFAULT 'not_created',
   shipping_tracking_code TEXT,
   shipping_label_url TEXT,
+  stock_committed BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -289,6 +299,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_status TEXT NOT NULL DEFAULT 'not_created';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_tracking_code TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_url TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_committed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_method TEXT;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_payment_id TEXT;

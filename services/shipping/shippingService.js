@@ -331,9 +331,66 @@ async function getTrackingByOrder(pool, orderId) {
   return buildTrackingResponse(orderId, row.order_number, shipment, events);
 }
 
+async function updateTrackingStatusForOrder(pool, orderId, payload = {}) {
+  if (!Number.isInteger(orderId) || orderId <= 0) {
+    throw new Error('Invalid order id');
+  }
+
+  const orderResult = await pool.query(`SELECT id FROM orders WHERE id = $1 LIMIT 1`, [orderId]);
+  if (!orderResult.rows[0]) {
+    throw new Error('Order not found');
+  }
+
+  const status = normalizeStatus(payload.status || 'in_transit');
+  if (!status) {
+    throw new Error('status is required');
+  }
+
+  const location = typeof payload.location === 'string' ? payload.location.trim() || null : null;
+  const description = typeof payload.description === 'string' ? payload.description.trim() || null : null;
+
+  const existingShipment = await pool.query(`SELECT * FROM shipments WHERE order_id = $1 LIMIT 1`, [orderId]);
+  const shipment = existingShipment.rows[0] || (await ensureShipmentForOrder(pool, orderId));
+
+  await pool.query(
+    `UPDATE shipments
+     SET status = $1,
+         updated_at = NOW()
+     WHERE id = $2`,
+    [status, shipment.id]
+  );
+
+  await insertTrackingEvent(pool, {
+    shipmentId: shipment.id,
+    orderId,
+    status,
+    location,
+    description,
+    rawPayload: payload,
+  });
+
+  await pool.query(
+    `UPDATE orders
+     SET shipping_status = $1,
+         shipping_tracking_code = COALESCE(shipping_tracking_code, $2),
+         shipping_label_url = COALESCE(shipping_label_url, $3),
+         status = CASE
+           WHEN $1 IN ('delivered', 'completed') THEN 'completed'
+           WHEN $1 IN ('shipped', 'in_transit', 'out_for_delivery', 'label_created', 'created') AND status IN ('paid', 'awaiting_payment', 'pending', 'processing') THEN 'processing'
+           ELSE status
+         END,
+         updated_at = NOW()
+     WHERE id = $4`,
+    [status, shipment.tracking_code, shipment.label_url, orderId]
+  );
+
+  return getTrackingByOrder(pool, orderId);
+}
+
 module.exports = {
   ensureShipmentForOrder,
   processShippingWebhook,
   listShipments,
   getTrackingByOrder,
+  updateTrackingStatusForOrder,
 };

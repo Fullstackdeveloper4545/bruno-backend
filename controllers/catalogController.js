@@ -499,18 +499,59 @@ async function deleteAttribute(req, res) {
 
 async function getInventory(req, res) {
   try {
-    const productId = Number(req.params.id);
-    const result = await pool.query(
-      `SELECT si.*, s.name AS store_name, pv.sku
-       FROM store_inventory si
-       JOIN stores s ON s.id = si.store_id
-       JOIN product_variants pv ON pv.id = si.variant_id
-       WHERE pv.product_id = $1
-       ORDER BY s.priority_level ASC`,
-      [productId]
-    );
+    const productId = String(req.params.id || '').trim();
+    if (!productId) {
+      return res.status(400).json({ message: 'Invalid product id' });
+    }
 
-    res.json(result.rows);
+    const source = await pool.query(
+      `SELECT
+         to_regclass('public.store_inventory') IS NOT NULL AS has_store_inventory,
+         to_regclass('public.store_stock') IS NOT NULL AS has_store_stock`
+    );
+    const hasStoreInventory = Boolean(source.rows[0]?.has_store_inventory);
+    const hasStoreStock = Boolean(source.rows[0]?.has_store_stock);
+
+    let rows = [];
+    if (hasStoreInventory) {
+      const result = await pool.query(
+        `SELECT
+           si.store_id,
+           si.variant_id,
+           si.stock_quantity,
+           si.updated_at,
+           s.name AS store_name,
+           pv.sku,
+           pv.product_id
+         FROM store_inventory si
+         JOIN stores s ON s.id::text = si.store_id::text
+         JOIN product_variants pv ON pv.id::text = si.variant_id::text
+         WHERE pv.product_id::text = $1::text
+         ORDER BY COALESCE(s.priority_level, 1) ASC, s.name ASC`,
+        [productId]
+      );
+      rows = result.rows;
+    } else if (hasStoreStock) {
+      const result = await pool.query(
+        `SELECT
+           ss.store_id,
+           ss.variant_id,
+           ss.quantity AS stock_quantity,
+           ss.updated_at,
+           s.name AS store_name,
+           pv.sku,
+           COALESCE(pv.product_id, ss.product_id) AS product_id
+         FROM store_stock ss
+         JOIN stores s ON s.id::text = ss.store_id::text
+         LEFT JOIN product_variants pv ON pv.id::text = ss.variant_id::text
+         WHERE COALESCE(pv.product_id::text, ss.product_id::text) = $1::text
+         ORDER BY COALESCE(s.priority_level, 1) ASC, s.name ASC`,
+        [productId]
+      );
+      rows = result.rows;
+    }
+
+    res.json(rows);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -518,23 +559,54 @@ async function getInventory(req, res) {
 
 async function updateInventory(req, res) {
   try {
-    const variantId = Number(req.params.variantId);
-    const storeId = Number(req.params.storeId);
+    const variantId = String(req.params.variantId || '').trim();
+    const storeId = String(req.params.storeId || '').trim();
     const { stock_quantity } = req.body;
+    if (!variantId || !storeId) {
+      return res.status(400).json({ message: 'Invalid variant/store id' });
+    }
 
     const integration = await pool.query(`SELECT is_active FROM integration_settings WHERE id = 1`);
     if (integration.rows[0]?.is_active) {
       return res.status(403).json({ message: 'Stock is managed by integration and cannot be edited manually.' });
     }
 
-    const result = await pool.query(
-      `INSERT INTO store_inventory (store_id, variant_id, stock_quantity, updated_at)
-       VALUES ($1,$2,$3,NOW())
-       ON CONFLICT (store_id, variant_id)
-       DO UPDATE SET stock_quantity = EXCLUDED.stock_quantity, updated_at = NOW()
-       RETURNING *`,
-      [storeId, variantId, parseNumber(stock_quantity)]
+    const safeStock = Math.max(0, parseNumber(stock_quantity));
+    const source = await pool.query(
+      `SELECT
+         to_regclass('public.store_inventory') IS NOT NULL AS has_store_inventory,
+         to_regclass('public.store_stock') IS NOT NULL AS has_store_stock`
     );
+    const hasStoreInventory = Boolean(source.rows[0]?.has_store_inventory);
+    const hasStoreStock = Boolean(source.rows[0]?.has_store_stock);
+
+    let result;
+    if (hasStoreInventory) {
+      result = await pool.query(
+        `INSERT INTO store_inventory (store_id, variant_id, stock_quantity, updated_at)
+         VALUES ($1,$2,$3,NOW())
+         ON CONFLICT (store_id, variant_id)
+         DO UPDATE SET stock_quantity = EXCLUDED.stock_quantity, updated_at = NOW()
+         RETURNING *`,
+        [storeId, variantId, safeStock]
+      );
+    } else if (hasStoreStock) {
+      const variant = await pool.query(`SELECT product_id FROM product_variants WHERE id::text = $1::text LIMIT 1`, [variantId]);
+      const productId = variant.rows[0]?.product_id;
+      if (!productId) {
+        return res.status(404).json({ message: 'Variant not found' });
+      }
+      result = await pool.query(
+        `INSERT INTO store_stock (store_id, product_id, variant_id, quantity, updated_at)
+         VALUES ($1,$2,$3,$4,NOW())
+         ON CONFLICT (store_id, product_id, variant_id)
+         DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()
+         RETURNING *, quantity AS stock_quantity`,
+        [storeId, productId, variantId, safeStock]
+      );
+    } else {
+      return res.status(500).json({ message: 'No inventory table found (store_inventory/store_stock).' });
+    }
 
     res.json(result.rows[0]);
   } catch (error) {

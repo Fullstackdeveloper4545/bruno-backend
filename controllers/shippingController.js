@@ -58,9 +58,20 @@ async function cttWebhook(req, res) {
   }
 }
 
+async function updateTrackingStatus(req, res) {
+  try {
+    const orderId = Number(req.params.orderId);
+    const tracking = await shippingService.updateTrackingStatusForOrder(pool, orderId, req.body || {});
+    res.json(tracking);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+}
+
 module.exports = {
   listShipments,
   generateLabel,
   getTracking,
   cttWebhook,
+  updateTrackingStatus,
 };

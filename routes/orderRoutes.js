@@ -3,6 +3,7 @@ const controller = require('../controllers/orderController');
 const router = express.Router();
 
 router.get('/', controller.listOrders);
+router.get('/dashboard/summary', controller.getDashboardSummary);
 router.get('/my', controller.listMyOrders);
 router.get('/my/:id', controller.getMyOrder);
 router.get('/my/:id/invoice', controller.downloadMyOrderInvoice);

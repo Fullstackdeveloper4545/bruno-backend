@@ -87,9 +87,11 @@ async function findPaymentByWebhook(pool, parsed) {
 }
 
 async function decrementInventoryForOrder(pool, orderId) {
-  const orderResult = await pool.query(`SELECT assigned_store_id FROM orders WHERE id = $1`, [orderId]);
+  const orderResult = await pool.query(`SELECT assigned_store_id, stock_committed FROM orders WHERE id = $1`, [orderId]);
   const storeId = orderResult.rows[0]?.assigned_store_id;
+  const alreadyCommitted = Boolean(orderResult.rows[0]?.stock_committed);
   if (!storeId) return;
+  if (alreadyCommitted) return;
 
   const items = await pool.query(`SELECT variant_id, quantity FROM order_items WHERE order_id = $1 AND variant_id IS NOT NULL`, [orderId]);
 
@@ -101,6 +103,8 @@ async function decrementInventoryForOrder(pool, orderId) {
       [item.quantity, storeId, item.variant_id]
     );
   }
+
+  await pool.query(`UPDATE orders SET stock_committed = true, updated_at = NOW() WHERE id = $1`, [orderId]);
 }
 
 async function handleWebhook(pool, providerName, payload) {
@@ -140,9 +144,7 @@ async function handleWebhook(pool, providerName, payload) {
       [payment.order_id]
     );
 
-    if (payment.status !== 'paid') {
-      await decrementInventoryForOrder(pool, payment.order_id);
-    }
+    if (payment.status !== 'paid') await decrementInventoryForOrder(pool, payment.order_id);
 
     await ensureShipmentForOrder(pool, payment.order_id);
   }
