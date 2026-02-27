@@ -147,6 +147,15 @@ CREATE TABLE IF NOT EXISTS store_stock (
     UNIQUE(store_id, product_id, variant_id)
 );
 
+CREATE TABLE IF NOT EXISTS store_inventory (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    variant_id UUID NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+    stock_quantity INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(store_id, variant_id)
+);
+
 CREATE TABLE IF NOT EXISTS integration_settings (
   id SERIAL PRIMARY KEY,
   base_url TEXT,
@@ -264,6 +273,8 @@ CREATE TABLE IF NOT EXISTS shipment_tracking_events (
   status TEXT NOT NULL,
   location TEXT,
   description TEXT,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
   occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
   raw_payload JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMP DEFAULT NOW()
@@ -334,6 +345,8 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_pt VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_es VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS image_url TEXT`);
+  await pool.query(`ALTER TABLE shipment_tracking_events ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION`);
+  await pool.query(`ALTER TABLE shipment_tracking_events ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION`);
   // Upgrade legacy FK column types to UUID so they match current primary keys.
   await pool.query(`
     DO $$
@@ -436,6 +449,96 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS region_district VARCHAR(100)`);
   await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS priority_level INTEGER DEFAULT 1`);
   await pool.query(`UPDATE stores SET priority_level = 1 WHERE priority_level IS NULL`);
+  // Normalize legacy store_inventory table shapes (older DBs used INTEGER ids).
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF to_regclass('public.store_inventory') IS NOT NULL THEN
+        ALTER TABLE store_inventory DROP CONSTRAINT IF EXISTS store_inventory_store_id_variant_id_key;
+        ALTER TABLE store_inventory DROP CONSTRAINT IF EXISTS store_inventory_store_id_fkey;
+        ALTER TABLE store_inventory DROP CONSTRAINT IF EXISTS store_inventory_variant_id_fkey;
+
+        -- Legacy integer identifiers cannot be mapped to UUID ids, so drop unmigratable rows.
+        DELETE FROM store_inventory
+        WHERE store_id::text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+           OR variant_id::text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'store_inventory'
+            AND column_name = 'store_id'
+            AND data_type <> 'uuid'
+        ) THEN
+          ALTER TABLE store_inventory
+          ALTER COLUMN store_id TYPE UUID
+          USING store_id::text::uuid;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'store_inventory'
+            AND column_name = 'variant_id'
+            AND data_type <> 'uuid'
+        ) THEN
+          ALTER TABLE store_inventory
+          ALTER COLUMN variant_id TYPE UUID
+          USING variant_id::text::uuid;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'store_inventory'
+            AND column_name = 'id'
+            AND data_type <> 'uuid'
+        ) THEN
+          ALTER TABLE store_inventory DROP CONSTRAINT IF EXISTS store_inventory_pkey;
+          ALTER TABLE store_inventory ALTER COLUMN id DROP DEFAULT;
+          ALTER TABLE store_inventory
+          ALTER COLUMN id TYPE UUID
+          USING gen_random_uuid();
+          ALTER TABLE store_inventory
+          ALTER COLUMN id SET DEFAULT gen_random_uuid();
+          ALTER TABLE store_inventory
+          ADD CONSTRAINT store_inventory_pkey PRIMARY KEY (id);
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'store_inventory_store_id_variant_id_key'
+        ) THEN
+          ALTER TABLE store_inventory
+          ADD CONSTRAINT store_inventory_store_id_variant_id_key UNIQUE (store_id, variant_id);
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'store_inventory_store_id_fkey'
+        ) THEN
+          ALTER TABLE store_inventory
+          ADD CONSTRAINT store_inventory_store_id_fkey
+          FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'store_inventory_variant_id_fkey'
+        ) THEN
+          ALTER TABLE store_inventory
+          ADD CONSTRAINT store_inventory_variant_id_fkey
+          FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE;
+        END IF;
+      END IF;
+    END $$;
+  `);
   await pool.query(`
     DO $$
     BEGIN

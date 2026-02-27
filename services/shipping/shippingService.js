@@ -1,5 +1,6 @@
 const cttProvider = require('./providers/cttProvider');
 const { sendOrderTrackingEmail } = require('../mailService');
+const { buildShipmentMap } = require('./googleMapsService');
 
 const STEP_SEQUENCE = ['packaging', 'shipped', 'out_for_delivery', 'delivered'];
 const STEP_LABELS = {
@@ -77,19 +78,42 @@ function defaultDescriptionForStatus(status) {
   return null;
 }
 
+function parseCoordinate(value, min, max) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < min || parsed > max) return null;
+  return parsed;
+}
+
 async function insertTrackingEvent(
   pool,
-  { shipmentId, orderId, status, location = null, description = null, occurredAt = null, rawPayload = {} }
+  {
+    shipmentId,
+    orderId,
+    status,
+    location = null,
+    description = null,
+    latitude = null,
+    longitude = null,
+    occurredAt = null,
+    rawPayload = {},
+  }
 ) {
+  const safeLatitude = parseCoordinate(latitude, -90, 90);
+  const safeLongitude = parseCoordinate(longitude, -180, 180);
+
   await pool.query(
-    `INSERT INTO shipment_tracking_events (shipment_id, order_id, status, location, description, occurred_at, raw_payload)
-     VALUES ($1,$2,$3,$4,$5,COALESCE($6::timestamp,NOW()),$7::jsonb)`,
+    `INSERT INTO shipment_tracking_events (shipment_id, order_id, status, location, description, latitude, longitude, occurred_at, raw_payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8::timestamp,NOW()),$9::jsonb)`,
     [
       shipmentId,
       orderId,
       normalizeStatus(status),
       location,
       description || defaultDescriptionForStatus(status),
+      safeLatitude,
+      safeLongitude,
       occurredAt,
       JSON.stringify(rawPayload || {}),
     ]
@@ -98,7 +122,7 @@ async function insertTrackingEvent(
 
 async function getTrackingEventsByOrder(pool, orderId) {
   const result = await pool.query(
-    `SELECT id, shipment_id, order_id, status, location, description, occurred_at
+    `SELECT id, shipment_id, order_id, status, location, description, latitude, longitude, occurred_at
      FROM shipment_tracking_events
      WHERE order_id = $1
      ORDER BY occurred_at ASC, id ASC`,
@@ -166,7 +190,7 @@ function buildProgressSteps(shipment, events) {
   });
 }
 
-function buildTrackingResponse(orderId, orderNumber, shipment, events) {
+function buildTrackingResponse(orderId, orderNumber, shipment, events, map) {
   const currentStatus = shipment ? normalizeStatus(shipment.status) : 'not_created';
   const steps = buildProgressSteps(shipment, events);
   const formattedEvents = events
@@ -178,6 +202,8 @@ function buildTrackingResponse(orderId, orderNumber, shipment, events) {
       label: formatStatusLabel(event.status),
       location: event.location || null,
       description: event.description || null,
+      latitude: parseCoordinate(event.latitude, -90, 90),
+      longitude: parseCoordinate(event.longitude, -180, 180),
       occurred_at: event.occurred_at,
     }));
 
@@ -192,6 +218,7 @@ function buildTrackingResponse(orderId, orderNumber, shipment, events) {
     updated_at: shipment?.updated_at || null,
     steps,
     events: formattedEvents,
+    map: map || null,
   };
 }
 
@@ -284,6 +311,8 @@ async function processShippingWebhook(pool, payload) {
     status: parsed.status,
     location: parsed.location,
     description: parsed.description,
+    latitude: parsed.latitude,
+    longitude: parsed.longitude,
     occurredAt: parsed.occurredAt,
     rawPayload: parsed.raw || {},
   });
@@ -313,8 +342,17 @@ async function listShipments(pool) {
 
 async function getTrackingByOrder(pool, orderId) {
   const result = await pool.query(
-    `SELECT o.id AS order_id, o.order_number, sh.*
+    `SELECT
+       o.id AS order_id,
+       o.order_number,
+       o.shipping_address,
+       o.shipping_region,
+       s.id AS store_id,
+       s.name AS store_name,
+       s.address AS store_address,
+       sh.*
      FROM orders o
+     LEFT JOIN stores s ON s.id::text = o.assigned_store_id::text
      LEFT JOIN shipments sh ON sh.order_id = o.id
      WHERE o.id = $1
      LIMIT 1`,
@@ -328,7 +366,16 @@ async function getTrackingByOrder(pool, orderId) {
 
   const shipment = row.id ? row : null;
   const events = shipment ? await getTrackingEventsByOrder(pool, orderId) : [];
-  return buildTrackingResponse(orderId, row.order_number, shipment, events);
+  const map = await buildShipmentMap({
+    order: {
+      shipping_address: row.shipping_address,
+      shipping_region: row.shipping_region,
+      store_name: row.store_name,
+      store_address: row.store_address,
+    },
+    events,
+  });
+  return buildTrackingResponse(orderId, row.order_number, shipment, events, map);
 }
 
 async function updateTrackingStatusForOrder(pool, orderId, payload = {}) {
@@ -347,7 +394,13 @@ async function updateTrackingStatusForOrder(pool, orderId, payload = {}) {
   }
 
   const location = typeof payload.location === 'string' ? payload.location.trim() || null : null;
+  const outForDeliveryAddress =
+    typeof payload.out_for_delivery_address === 'string' ? payload.out_for_delivery_address.trim() || null : null;
+  const resolvedLocation =
+    status === 'out_for_delivery' ? outForDeliveryAddress || location : location;
   const description = typeof payload.description === 'string' ? payload.description.trim() || null : null;
+  const latitude = parseCoordinate(payload.latitude ?? payload.lat, -90, 90);
+  const longitude = parseCoordinate(payload.longitude ?? payload.lng, -180, 180);
 
   const existingShipment = await pool.query(`SELECT * FROM shipments WHERE order_id = $1 LIMIT 1`, [orderId]);
   const shipment = existingShipment.rows[0] || (await ensureShipmentForOrder(pool, orderId));
@@ -364,8 +417,10 @@ async function updateTrackingStatusForOrder(pool, orderId, payload = {}) {
     shipmentId: shipment.id,
     orderId,
     status,
-    location,
+    location: resolvedLocation,
     description,
+    latitude,
+    longitude,
     rawPayload: payload,
   });
 

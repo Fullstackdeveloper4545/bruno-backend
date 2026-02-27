@@ -1,6 +1,24 @@
 const pool = require('../config/db');
 const shippingService = require('../services/shipping/shippingService');
 
+function parsePositiveInt(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function resolveOrderId(orderRef) {
+  const normalized = String(orderRef || '').trim();
+  if (!normalized) return null;
+
+  const numericId = parsePositiveInt(normalized);
+  if (numericId) {
+    return numericId;
+  }
+
+  const byOrderNumber = await pool.query(`SELECT id FROM orders WHERE order_number = $1 LIMIT 1`, [normalized]);
+  return byOrderNumber.rows[0]?.id || null;
+}
+
 async function listShipments(req, res) {
   try {
     const shipments = await shippingService.listShipments(pool);
@@ -12,7 +30,10 @@ async function listShipments(req, res) {
 
 async function generateLabel(req, res) {
   try {
-    const orderId = Number(req.params.orderId);
+    const orderId = await resolveOrderId(req.params.orderId);
+    if (!orderId) {
+      return res.status(404).json({ message: 'Order not found. Use a valid order ID or order number.' });
+    }
     const shipment = await shippingService.ensureShipmentForOrder(pool, orderId);
     res.status(201).json(shipment);
   } catch (error) {
@@ -22,9 +43,9 @@ async function generateLabel(req, res) {
 
 async function getTracking(req, res) {
   try {
-    const orderId = Number(req.params.orderId);
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      return res.status(400).json({ message: 'Invalid order id' });
+    const orderId = await resolveOrderId(req.params.orderId);
+    if (!orderId) {
+      return res.status(404).json({ message: 'Order not found. Use a valid order ID or order number.' });
     }
 
     const tracking = await shippingService.getTrackingByOrder(pool, orderId);
@@ -41,6 +62,7 @@ async function getTracking(req, res) {
           { key: 'delivered', label: 'Delivered', state: 'pending', reached_at: null },
         ],
         events: [],
+        map: null,
       });
     }
     res.json(tracking);
@@ -60,7 +82,10 @@ async function cttWebhook(req, res) {
 
 async function updateTrackingStatus(req, res) {
   try {
-    const orderId = Number(req.params.orderId);
+    const orderId = await resolveOrderId(req.params.orderId);
+    if (!orderId) {
+      return res.status(404).json({ message: 'Order not found. Use a valid order ID or order number.' });
+    }
     const tracking = await shippingService.updateTrackingStatusForOrder(pool, orderId, req.body || {});
     res.json(tracking);
   } catch (error) {

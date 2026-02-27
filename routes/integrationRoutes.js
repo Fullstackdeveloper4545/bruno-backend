@@ -4,6 +4,7 @@ const router = express.Router();
 
 router.get('/settings', controller.getIntegrationSettings);
 router.put('/settings', controller.updateIntegrationSettings);
+router.get('/mock/products-sync', controller.getMockProductsSync);
 router.post('/sync/manual', controller.manualSync);
 router.post('/webhook', controller.webhookSync);
 router.get('/logs', controller.getSyncLogs);
