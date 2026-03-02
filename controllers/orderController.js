@@ -597,12 +597,79 @@ async function updateOrderStatus(req, res) {
   }
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function calculatePercentChange(currentValue, previousValue) {
+  const current = toFiniteNumber(currentValue, 0);
+  const previous = toFiniteNumber(previousValue, 0);
+  if (previous <= 0) return current > 0 ? 100 : 0;
+  return Number((((current - previous) / previous) * 100).toFixed(1));
+}
+
 async function getDashboardSummary(req, res) {
   try {
     const thresholdRaw = Number(req.query?.threshold);
     const threshold = Number.isFinite(thresholdRaw) && thresholdRaw >= 0 ? Math.floor(thresholdRaw) : 5;
     const limitRaw = Number(req.query?.limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 10;
+
+    const kpiAggregateResult = await pool.query(
+      `SELECT
+         COALESCE(SUM(o.total), 0)::numeric(14,2) AS total_revenue,
+         COALESCE(SUM(o.total) FILTER (WHERE o.created_at::date = CURRENT_DATE), 0)::numeric(14,2) AS today_revenue,
+         COALESCE(SUM(o.total) FILTER (WHERE date_trunc('month', o.created_at) = date_trunc('month', CURRENT_DATE)), 0)::numeric(14,2) AS month_revenue,
+         COALESCE(SUM(o.total) FILTER (WHERE date_trunc('year', o.created_at) = date_trunc('year', CURRENT_DATE)), 0)::numeric(14,2) AS year_revenue,
+         COUNT(o.id)::int AS total_orders,
+         COUNT(o.id) FILTER (WHERE o.status IN ('pending', 'awaiting_payment', 'paid', 'processing'))::int AS pending_orders,
+         COUNT(o.id) FILTER (WHERE o.shipping_status IN ('label_created', 'created', 'shipped', 'in_transit', 'out_for_delivery'))::int AS ready_to_ship_orders,
+         COUNT(o.id) FILTER (WHERE o.payment_status = 'failed' OR o.status = 'payment_failed')::int AS failed_payments
+       FROM orders o`
+    );
+
+    const revenueCompareResult = await pool.query(
+      `SELECT
+         COALESCE(SUM(o.total) FILTER (WHERE date_trunc('month', o.created_at) = date_trunc('month', CURRENT_DATE)), 0)::numeric(14,2) AS current_month_revenue,
+         COALESCE(SUM(o.total) FILTER (WHERE date_trunc('month', o.created_at) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')), 0)::numeric(14,2) AS previous_month_revenue
+       FROM orders o`
+    );
+
+    const trendCompareResult = await pool.query(
+      `SELECT
+         COUNT(o.id) FILTER (
+           WHERE o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '6 days' AND CURRENT_DATE
+         )::int AS total_orders_current_7d,
+         COUNT(o.id) FILTER (
+           WHERE o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '13 days' AND CURRENT_DATE - INTERVAL '7 days'
+         )::int AS total_orders_prev_7d,
+         COUNT(o.id) FILTER (
+           WHERE o.status IN ('pending', 'awaiting_payment', 'paid', 'processing')
+             AND o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '6 days' AND CURRENT_DATE
+         )::int AS pending_orders_current_7d,
+         COUNT(o.id) FILTER (
+           WHERE o.status IN ('pending', 'awaiting_payment', 'paid', 'processing')
+             AND o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '13 days' AND CURRENT_DATE - INTERVAL '7 days'
+         )::int AS pending_orders_prev_7d,
+         COUNT(o.id) FILTER (
+           WHERE o.shipping_status IN ('label_created', 'created', 'shipped', 'in_transit', 'out_for_delivery')
+             AND o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '6 days' AND CURRENT_DATE
+         )::int AS ready_to_ship_current_7d,
+         COUNT(o.id) FILTER (
+           WHERE o.shipping_status IN ('label_created', 'created', 'shipped', 'in_transit', 'out_for_delivery')
+             AND o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '13 days' AND CURRENT_DATE - INTERVAL '7 days'
+         )::int AS ready_to_ship_prev_7d,
+         COUNT(o.id) FILTER (
+           WHERE (o.payment_status = 'failed' OR o.status = 'payment_failed')
+             AND o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '6 days' AND CURRENT_DATE
+         )::int AS failed_payments_current_7d,
+         COUNT(o.id) FILTER (
+           WHERE (o.payment_status = 'failed' OR o.status = 'payment_failed')
+             AND o.created_at::date BETWEEN CURRENT_DATE - INTERVAL '13 days' AND CURRENT_DATE - INTERVAL '7 days'
+         )::int AS failed_payments_prev_7d
+       FROM orders o`
+    );
 
     const ordersPerStoreResult = await pool.query(
       `SELECT
@@ -701,7 +768,42 @@ async function getDashboardSummary(req, res) {
       lowStockRows = lowStockResult.rows;
     }
 
+    const aggregate = kpiAggregateResult.rows[0] || {};
+    const monthCompare = revenueCompareResult.rows[0] || {};
+    const trendCompare = trendCompareResult.rows[0] || {};
+    const kpis = {
+      total_revenue: toFiniteNumber(aggregate.total_revenue),
+      today_revenue: toFiniteNumber(aggregate.today_revenue),
+      month_revenue: toFiniteNumber(aggregate.month_revenue),
+      year_revenue: toFiniteNumber(aggregate.year_revenue),
+      total_orders: toFiniteNumber(aggregate.total_orders),
+      pending_orders: toFiniteNumber(aggregate.pending_orders),
+      ready_to_ship_orders: toFiniteNumber(aggregate.ready_to_ship_orders),
+      failed_payments: toFiniteNumber(aggregate.failed_payments),
+      revenue_vs_last_month_pct: calculatePercentChange(
+        monthCompare.current_month_revenue,
+        monthCompare.previous_month_revenue
+      ),
+      total_orders_vs_prev_7d_pct: calculatePercentChange(
+        trendCompare.total_orders_current_7d,
+        trendCompare.total_orders_prev_7d
+      ),
+      pending_orders_vs_prev_7d_pct: calculatePercentChange(
+        trendCompare.pending_orders_current_7d,
+        trendCompare.pending_orders_prev_7d
+      ),
+      ready_to_ship_vs_prev_7d_pct: calculatePercentChange(
+        trendCompare.ready_to_ship_current_7d,
+        trendCompare.ready_to_ship_prev_7d
+      ),
+      failed_payments_vs_prev_7d_pct: calculatePercentChange(
+        trendCompare.failed_payments_current_7d,
+        trendCompare.failed_payments_prev_7d
+      ),
+    };
+
     res.json({
+      kpis,
       orders_per_store: ordersPerStoreResult.rows.map((row) => ({
         store_id: row.store_id || null,
         store_name: row.store_name,

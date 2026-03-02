@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   id SERIAL PRIMARY KEY,
   base_url TEXT,
   api_key TEXT,
+  integration_name TEXT,
   webhook_secret TEXT,
   is_active BOOLEAN DEFAULT false,
   sync_invoices BOOLEAN DEFAULT true,
@@ -345,6 +346,7 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_pt VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_es VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS image_url TEXT`);
+  await pool.query(`ALTER TABLE integration_settings ADD COLUMN IF NOT EXISTS integration_name TEXT`);
   await pool.query(`ALTER TABLE shipment_tracking_events ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION`);
   await pool.query(`ALTER TABLE shipment_tracking_events ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION`);
   // Upgrade legacy FK column types to UUID so they match current primary keys.

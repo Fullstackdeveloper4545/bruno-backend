@@ -12,18 +12,19 @@ async function getIntegrationSettings(req, res) {
 
 async function updateIntegrationSettings(req, res) {
   try {
-    const { base_url, api_key, webhook_secret, is_active, sync_invoices } = req.body;
+    const { base_url, api_key, integration_name, webhook_secret, is_active, sync_invoices } = req.body;
     const result = await pool.query(
       `UPDATE integration_settings
        SET base_url = COALESCE($1, base_url),
            api_key = COALESCE($2, api_key),
-           webhook_secret = COALESCE($3, webhook_secret),
-           is_active = COALESCE($4, is_active),
-           sync_invoices = COALESCE($5, sync_invoices),
+           integration_name = COALESCE($3, integration_name),
+           webhook_secret = COALESCE($4, webhook_secret),
+           is_active = COALESCE($5, is_active),
+           sync_invoices = COALESCE($6, sync_invoices),
            updated_at = NOW()
        WHERE id = 1
        RETURNING *`,
-      [base_url, api_key, webhook_secret, is_active, sync_invoices]
+      [base_url, api_key, integration_name, webhook_secret, is_active, sync_invoices]
     );
 
     res.json(result.rows[0]);

@@ -96,6 +96,79 @@ async function listStores(pool, activeOnly) {
   }));
 }
 
+async function getRoutingMode(pool) {
+  try {
+    const result = await pool.query(`SELECT value FROM app_settings WHERE key = 'routing_mode' LIMIT 1`);
+    const raw = result.rows[0]?.value;
+    const mode = typeof raw === 'string' ? raw : raw?.mode || 'region';
+    return mode === 'quantity' ? 'quantity' : 'region';
+  } catch {
+    return 'region';
+  }
+}
+
+async function getStoreRegionsMap(pool, storeIds) {
+  if (!Array.isArray(storeIds) || storeIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await pool.query(
+    `SELECT store_id::text AS store_id, region
+     FROM store_regions
+     WHERE store_id::text = ANY($1::text[])`,
+    [storeIds.map((id) => String(id))]
+  );
+
+  const map = new Map();
+  for (const row of result.rows) {
+    const storeId = String(row.store_id || '').trim();
+    if (!storeId) continue;
+    const current = map.get(storeId) || [];
+    current.push(normalizeRegionName(row.region));
+    map.set(storeId, current);
+  }
+
+  return map;
+}
+
+function extractRegionCandidates(shippingRegion) {
+  const normalized = normalizeRegionName(shippingRegion);
+  if (!normalized) return [];
+
+  const candidates = new Set();
+  candidates.add(normalized);
+
+  normalized
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => candidates.add(part));
+
+  normalized
+    .split(' ')
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .forEach((token) => candidates.add(token));
+
+  return Array.from(candidates);
+}
+
+function matchesRegion(store, regionCandidates, mappedRegions) {
+  if (regionCandidates.length === 0) return true;
+
+  const district = normalizeRegionName(store?.region_district || store?.district || '');
+  if (district && regionCandidates.some((candidate) => district.includes(candidate))) {
+    return true;
+  }
+
+  const list = Array.isArray(mappedRegions) ? mappedRegions : [];
+  if (list.includes('global') || list.includes('*')) {
+    return true;
+  }
+
+  return regionCandidates.some((candidate) => list.some((region) => region.includes(candidate)));
+}
+
 function parseCoordinates(value) {
   const text = String(value || '').trim();
   if (!text) return null;
@@ -390,9 +463,31 @@ async function assignStoreForOrder(pool, shippingRegion, items) {
   const normalizedItems = normalizeItems(items);
   const sources = await getInventorySources(pool);
   const activeStores = await listStores(pool, true);
+  const routingMode = await getRoutingMode(pool);
 
   if (activeStores.length > 0) {
-    const rankedStores = await rankStoresByDistance(pool, activeStores, shippingRegion);
+    if (routingMode === 'quantity') {
+      const bestByQuantity = await findBestFulfillmentStore(pool, activeStores, normalizedItems, sources);
+      if (bestByQuantity) {
+        return bestByQuantity;
+      }
+    }
+
+    const regionCandidates = extractRegionCandidates(shippingRegion);
+    const regionsMap = await getStoreRegionsMap(
+      pool,
+      activeStores.map((store) => store.id)
+    );
+
+    const regionMatchedStores =
+      routingMode === 'region'
+        ? activeStores.filter((store) =>
+            matchesRegion(store, regionCandidates, regionsMap.get(String(store.id)) || [])
+          )
+        : activeStores;
+
+    const candidateStores = regionMatchedStores.length > 0 ? regionMatchedStores : activeStores;
+    const rankedStores = await rankStoresByDistance(pool, candidateStores, shippingRegion);
 
     let bestPartial = null;
     for (const store of rankedStores) {
