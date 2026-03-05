@@ -67,6 +67,24 @@ CREATE TABLE IF NOT EXISTS categories (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS blog_posts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug VARCHAR(220) UNIQUE NOT NULL,
+    title_pt VARCHAR(255),
+    title_es VARCHAR(255),
+    excerpt_pt TEXT,
+    excerpt_es TEXT,
+    content_pt TEXT,
+    content_es TEXT,
+    cover_image_url TEXT,
+    is_published BOOLEAN DEFAULT FALSE,
+    published_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_blog_posts_published_at ON blog_posts (published_at DESC);
+
 CREATE TABLE IF NOT EXISTS products (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   sku VARCHAR(100) UNIQUE NOT NULL,

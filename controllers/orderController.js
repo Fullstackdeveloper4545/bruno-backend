@@ -718,6 +718,17 @@ async function getDashboardSummary(req, res) {
        ORDER BY days.day ASC`
     );
 
+    const cttWebhookResult = await pool.query(
+      `SELECT
+         ste.occurred_at AS last_event_at,
+         ste.status AS last_status
+       FROM shipment_tracking_events ste
+       JOIN shipments sh ON sh.id = ste.shipment_id
+       WHERE COALESCE(sh.provider, 'ctt') = 'ctt'
+       ORDER BY ste.occurred_at DESC, ste.id DESC
+       LIMIT 1`
+    );
+
     const source = await pool.query(
       `SELECT
          to_regclass('public.store_inventory') IS NOT NULL AS has_store_inventory,
@@ -771,6 +782,7 @@ async function getDashboardSummary(req, res) {
     const aggregate = kpiAggregateResult.rows[0] || {};
     const monthCompare = revenueCompareResult.rows[0] || {};
     const trendCompare = trendCompareResult.rows[0] || {};
+    const cttWebhook = cttWebhookResult.rows[0] || {};
     const kpis = {
       total_revenue: toFiniteNumber(aggregate.total_revenue),
       today_revenue: toFiniteNumber(aggregate.today_revenue),
@@ -829,6 +841,10 @@ async function getDashboardSummary(req, res) {
         store_name: row.store_name || 'Unknown Store',
         stock_left: Number(row.stock_left || 0),
       })),
+      ctt_webhook: {
+        last_event_at: cttWebhook.last_event_at || null,
+        last_status: cttWebhook.last_status || null,
+      },
       threshold,
       limit,
     });

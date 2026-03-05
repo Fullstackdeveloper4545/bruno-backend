@@ -17,6 +17,7 @@ const discountRoutes = require('../modules/discount/discount.routes');
 const invoiceRoutes = require('../modules/invoice/invoice.routes');
 const integrationRoutes = require('../modules/integration/integration.routes');
 const reportRoutes = require('../modules/report/report.routes');
+const blogRoutes = require('../routes/blogRoutes');
 const languageRoutes = require('../routes/languageRoutes');
 const legacyProductRoutes = require('../routes/productRoutes');
 const uploadRoutes = require('../routes/uploadRoutes');
@@ -45,6 +46,7 @@ if (featureFlags.modules.invoice) app.use('/api/invoices', moduleGate('invoice')
 if (featureFlags.modules.integration) app.use('/api/integration', integrationRoutes);
 if (featureFlags.modules.report) app.use('/api/reports', moduleGate('report'), reportRoutes);
 if (featureFlags.modules.language) app.use('/api/languages', languageRoutes);
+app.use('/api/blog', blogRoutes);
 app.use('/api/uploads', uploadRoutes);
 
 app.get('/', (req, res) => {
