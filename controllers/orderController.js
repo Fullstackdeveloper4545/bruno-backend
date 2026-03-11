@@ -673,13 +673,20 @@ async function getDashboardSummary(req, res) {
 
     const ordersPerStoreResult = await pool.query(
       `SELECT
-         o.assigned_store_id AS store_id,
+         s.id AS store_id,
          COALESCE(s.name, 'Unassigned') AS store_name,
+         COALESCE(COUNT(o.id), 0)::int AS orders
+       FROM stores s
+       LEFT JOIN orders o ON o.assigned_store_id::text = s.id::text
+       GROUP BY s.id, s.name
+      UNION ALL
+       SELECT
+         NULL AS store_id,
+         'Unassigned' AS store_name,
          COUNT(o.id)::int AS orders
        FROM orders o
-       LEFT JOIN stores s ON s.id::text = o.assigned_store_id::text
-       GROUP BY o.assigned_store_id, s.name
-       ORDER BY COUNT(o.id) DESC, COALESCE(s.name, 'Unassigned') ASC`
+       WHERE o.assigned_store_id IS NULL
+       ORDER BY orders DESC, store_name ASC`
     );
 
     const orders7dResult = await pool.query(

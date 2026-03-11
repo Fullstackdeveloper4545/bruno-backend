@@ -194,6 +194,18 @@ CREATE TABLE IF NOT EXISTS sync_logs (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS admin_login_activity (
+  id SERIAL PRIMARY KEY,
+  admin_email TEXT,
+  location TEXT,
+  status TEXT DEFAULT 'success',
+  ip_address TEXT,
+  user_agent TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_login_activity_created_at ON admin_login_activity (created_at DESC);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
