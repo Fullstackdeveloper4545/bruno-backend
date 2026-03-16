@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   variant_id UUID REFERENCES product_variants(id) ON DELETE SET NULL,
   product_name TEXT NOT NULL,
   sku TEXT,
+  selected_options JSONB DEFAULT '{}'::jsonb,
   quantity INTEGER NOT NULL,
   unit_price NUMERIC(12,2) NOT NULL,
   line_total NUMERIC(12,2) NOT NULL
@@ -348,6 +349,7 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_payment_id TEXT;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_url TEXT;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS webhook_payload JSONB;
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS selected_options JSONB DEFAULT '{}'::jsonb;
 `;
 
 async function ensureSchema() {

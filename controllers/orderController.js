@@ -11,6 +11,14 @@ function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function normalizeSelectedOptions(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, entryValue]) => [String(key || '').trim(), entryValue])
+      .filter(([key, entryValue]) => key && entryValue != null && String(entryValue).trim() !== '')
+  );
+}
 function isValidOrderItem(item) {
   if (!item || typeof item !== 'object') return false;
   const quantity = Number(item.quantity);
@@ -170,7 +178,26 @@ async function restoreStockForOrder(client, orderId, storeId) {
 async function listOrders(req, res) {
   try {
     const result = await pool.query(
-      `SELECT o.*, s.name AS store_name, s.address AS store_address
+      `SELECT
+         o.*,
+         s.name AS store_name,
+         s.address AS store_address,
+         COALESCE(
+           (
+             SELECT json_agg(
+               json_build_object(
+                 'product_name', oi.product_name,
+                 'quantity', oi.quantity,
+                 'sku', oi.sku,
+                 'selected_options', oi.selected_options
+               )
+               ORDER BY oi.id ASC
+             )
+             FROM order_items oi
+             WHERE oi.order_id = o.id
+           ),
+           '[]'::json
+         ) AS items_summary
        FROM orders o
        LEFT JOIN stores s ON s.id::text = o.assigned_store_id::text
        ORDER BY o.id DESC`
@@ -484,6 +511,7 @@ async function createOrder(req, res) {
       unit_price: Number(item.unit_price),
       product_id: item.product_id ?? null,
       variant_id: item.variant_id ?? null,
+      selected_options: normalizeSelectedOptions(item.selected_options),
     }));
 
     const store = await assignStoreForOrder(pool, normalizedShippingRegion, normalizedItems);
@@ -546,9 +574,19 @@ async function createOrder(req, res) {
       const productId = await resolveExistingProductId(item.product_id);
       const variantId = await resolveExistingVariantId(item.variant_id);
       await client.query(
-        `INSERT INTO order_items (order_id, product_id, variant_id, product_name, sku, quantity, unit_price, line_total)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [order.id, productId, variantId, item.product_name, item.sku || null, item.quantity, item.unit_price, lineTotal]
+        `INSERT INTO order_items (order_id, product_id, variant_id, product_name, sku, selected_options, quantity, unit_price, line_total)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          order.id,
+          productId,
+          variantId,
+          item.product_name,
+          item.sku || null,
+          JSON.stringify(item.selected_options || {}),
+          item.quantity,
+          item.unit_price,
+          lineTotal,
+        ]
       );
     }
 

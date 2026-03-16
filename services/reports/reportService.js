@@ -16,7 +16,7 @@ async function buildPendingOrdersSummary(pool, storeId) {
   }
 
   const store = storeResult.rows[0];
-  const ordersResult = await pool.query(
+  const pendingOrdersResult = await pool.query(
     `SELECT order_number, customer_name, total, status, payment_status, created_at
      FROM orders
      WHERE assigned_store_id::text = $1::text
@@ -25,18 +25,90 @@ async function buildPendingOrdersSummary(pool, storeId) {
     [storeId]
   );
 
-  return { store, orders: ordersResult.rows };
+  const analyticsResult = await pool.query(
+    `SELECT
+       COUNT(*)::int AS total_orders,
+       COUNT(*) FILTER (
+         WHERE created_at::date = CURRENT_DATE
+       )::int AS orders_today,
+       COALESCE(SUM(total), 0)::numeric(12,2) AS total_revenue,
+       COALESCE(SUM(total) FILTER (
+         WHERE created_at::date = CURRENT_DATE
+       ), 0)::numeric(12,2) AS revenue_today,
+       COUNT(*) FILTER (
+         WHERE created_at::date >= CURRENT_DATE - INTERVAL '6 days'
+       )::int AS orders_last_7d,
+       COALESCE(SUM(total) FILTER (
+         WHERE created_at::date >= CURRENT_DATE - INTERVAL '6 days'
+       ), 0)::numeric(12,2) AS revenue_last_7d,
+       COUNT(*) FILTER (
+         WHERE status IN ('pending', 'awaiting_payment', 'paid', 'processing')
+       )::int AS pending_orders
+     FROM orders
+     WHERE assigned_store_id::text = $1::text`,
+    [storeId]
+  );
+
+  return {
+    store,
+    orders: pendingOrdersResult.rows,
+    analytics: analyticsResult.rows[0] || {},
+  };
 }
 
 function renderPendingOrdersEmail(summary) {
   const lines = summary.orders.map((order) => `${order.order_number} | ${order.customer_name} | EUR ${Number(order.total).toFixed(2)} | ${order.status}/${order.payment_status}`);
+  const analytics = summary.analytics || {};
+  const stats = {
+    totalOrders: Number(analytics.total_orders || 0),
+    ordersToday: Number(analytics.orders_today || 0),
+    pendingOrders: Number(analytics.pending_orders || 0),
+    totalRevenue: Number(analytics.total_revenue || 0).toFixed(2),
+    revenueToday: Number(analytics.revenue_today || 0).toFixed(2),
+    ordersLast7d: Number(analytics.orders_last_7d || 0),
+    revenueLast7d: Number(analytics.revenue_last_7d || 0).toFixed(2),
+  };
 
   return {
-    subject: `Daily Pending Orders - ${summary.store.name}`,
+    subject: `Daily Report - ${summary.store.name}`,
     text: lines.length
-      ? `Store: ${summary.store.name}\n${lines.join('\n')}`
-      : `Store: ${summary.store.name}\nNo pending orders today.`,
-    html: `<p><strong>Store:</strong> ${summary.store.name}</p>${lines.length ? `<ul>${lines.map((line) => `<li>${line}</li>`).join('')}</ul>` : '<p>No pending orders today.</p>'}`,
+      ? `Store: ${summary.store.name}
+Orders today: ${stats.ordersToday}
+Revenue today: EUR ${stats.revenueToday}
+Orders last 7 days: ${stats.ordersLast7d}
+Revenue last 7 days: EUR ${stats.revenueLast7d}
+Total orders: ${stats.totalOrders}
+Total revenue: EUR ${stats.totalRevenue}
+Pending orders: ${stats.pendingOrders}
+
+Pending order list:
+${lines.join('\n')}`
+      : `Store: ${summary.store.name}
+Orders today: ${stats.ordersToday}
+Revenue today: EUR ${stats.revenueToday}
+Orders last 7 days: ${stats.ordersLast7d}
+Revenue last 7 days: EUR ${stats.revenueLast7d}
+Total orders: ${stats.totalOrders}
+Total revenue: EUR ${stats.totalRevenue}
+Pending orders: ${stats.pendingOrders}
+
+No pending orders today.`,
+    html: `
+      <div>
+        <p><strong>Store:</strong> ${summary.store.name}</p>
+        <h3>Analytics summary</h3>
+        <ul>
+          <li>Orders today: ${stats.ordersToday}</li>
+          <li>Revenue today: EUR ${stats.revenueToday}</li>
+          <li>Orders last 7 days: ${stats.ordersLast7d}</li>
+          <li>Revenue last 7 days: EUR ${stats.revenueLast7d}</li>
+          <li>Total orders: ${stats.totalOrders}</li>
+          <li>Total revenue: EUR ${stats.totalRevenue}</li>
+          <li>Pending orders: ${stats.pendingOrders}</li>
+        </ul>
+        <h3>Pending orders</h3>
+        ${lines.length ? `<ul>${lines.map((line) => `<li>${line}</li>`).join('')}</ul>` : '<p>No pending orders today.</p>'}
+      </div>`,
   };
 }
 
