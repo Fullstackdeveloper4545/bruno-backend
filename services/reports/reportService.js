@@ -126,7 +126,11 @@ async function runSchedule(pool, schedule) {
   await sendReportEmail(schedule.recipient_email, email.subject, email.text, email.html);
 
   await pool.query(
-    `UPDATE report_schedules SET last_sent_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1`,
+    `UPDATE report_schedules
+     SET last_sent_date = CURRENT_DATE,
+         last_sent_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1`,
     [schedule.id]
   );
 

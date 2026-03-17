@@ -334,6 +334,7 @@ CREATE TABLE IF NOT EXISTS report_schedules (
   recipient_email TEXT NOT NULL,
   is_active BOOLEAN DEFAULT true,
   last_sent_date DATE,
+  last_sent_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -366,6 +367,13 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS is_promoted BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE products ALTER COLUMN base_price SET DEFAULT 0`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+  await pool.query(`ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMP`);
+  await pool.query(`
+    UPDATE report_schedules
+    SET last_sent_at = COALESCE(last_sent_at, last_sent_date::timestamp)
+    WHERE last_sent_date IS NOT NULL
+      AND last_sent_at IS NULL
+  `);
 
   await pool.query(`ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS compare_at_price DECIMAL(12,2)`);
   await pool.query(`ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS currency VARCHAR(10) DEFAULT 'EUR'`);
