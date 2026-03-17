@@ -92,6 +92,10 @@ function getAdminEmail() {
   return String(process.env.ADMIN_EMAIL || 'admin123ecom@gmail.com').trim().toLowerCase();
 }
 
+function isAdminRole(role) {
+  return ['admin', 'super_admin'].includes(String(role || '').trim().toLowerCase());
+}
+
 function buildOtpAuthUri(email, secret) {
   const issuer = encodeURIComponent('Bruno Admin');
   const label = encodeURIComponent(`Bruno Admin:${email}`);
@@ -251,7 +255,7 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Please verify your account first" });
     }
 
-    const isAdminLogin = normalizedEmail.toLowerCase() === getAdminEmail();
+    const isAdminLogin = normalizedEmail.toLowerCase() === getAdminEmail() && isAdminRole(user.role);
     if (isAdminLogin && user.two_factor_enabled) {
       if (!isSixDigitOtp(totp_code)) {
         return res.json({ requires_2fa: true, message: 'Two-factor code required' });
@@ -447,7 +451,7 @@ exports.getAdminTwoFactorStatus = async (req, res) => {
   try {
     const email = getAdminEmail();
     const result = await pool.query(
-      `SELECT email, two_factor_enabled
+      `SELECT email, role, two_factor_enabled
        FROM users
        WHERE LOWER(email) = $1
        LIMIT 1`,
@@ -456,6 +460,9 @@ exports.getAdminTwoFactorStatus = async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Admin user not found' });
+    }
+    if (!isAdminRole(result.rows[0].role)) {
+      return res.status(403).json({ message: '2FA is available only for admin accounts' });
     }
 
     res.json({
@@ -478,7 +485,7 @@ exports.setupAdminTwoFactor = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT id, email, password, password_hash, two_factor_enabled
+      `SELECT id, email, password, password_hash, two_factor_enabled, role
        FROM users
        WHERE LOWER(email) = $1
        LIMIT 1`,
@@ -490,6 +497,9 @@ exports.setupAdminTwoFactor = async (req, res) => {
     }
 
     const user = result.rows[0];
+    if (!isAdminRole(user.role)) {
+      return res.status(403).json({ message: '2FA is available only for admin accounts' });
+    }
     const storedHash = user.password || user.password_hash;
     const isMatch = storedHash ? await bcrypt.compare(currentPassword, storedHash) : false;
     if (!isMatch) {
@@ -526,7 +536,7 @@ exports.enableAdminTwoFactor = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT id, two_factor_temp_secret
+      `SELECT id, role, two_factor_temp_secret
        FROM users
        WHERE LOWER(email) = $1
        LIMIT 1`,
@@ -538,6 +548,9 @@ exports.enableAdminTwoFactor = async (req, res) => {
     }
 
     const user = result.rows[0];
+    if (!isAdminRole(user.role)) {
+      return res.status(403).json({ message: '2FA is available only for admin accounts' });
+    }
     if (!user.two_factor_temp_secret) {
       return res.status(400).json({ message: 'Two-factor setup has not been started' });
     }
@@ -577,7 +590,7 @@ exports.disableAdminTwoFactor = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT id, password, password_hash, two_factor_secret
+      `SELECT id, password, password_hash, role, two_factor_secret
        FROM users
        WHERE LOWER(email) = $1
        LIMIT 1`,
@@ -589,6 +602,9 @@ exports.disableAdminTwoFactor = async (req, res) => {
     }
 
     const user = result.rows[0];
+    if (!isAdminRole(user.role)) {
+      return res.status(403).json({ message: '2FA is available only for admin accounts' });
+    }
     const storedHash = user.password || user.password_hash;
     const isMatch = storedHash ? await bcrypt.compare(currentPassword, storedHash) : false;
     if (!isMatch) {
