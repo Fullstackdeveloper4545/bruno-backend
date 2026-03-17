@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const bcrypt = require('bcrypt');
 
 const schemaSql = `
 CREATE TABLE IF NOT EXISTS users (
@@ -695,6 +696,24 @@ async function ensureSchema() {
   await pool.query(`INSERT INTO integration_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
   await pool.query(`INSERT INTO app_settings (key, value) VALUES ('routing_mode', '"region"'::jsonb) ON CONFLICT (key) DO NOTHING`);
   await pool.query(`INSERT INTO app_settings (key, value) VALUES ('languages', '["pt","es"]'::jsonb) ON CONFLICT (key) DO NOTHING`);
+
+  const adminEmail = String(process.env.ADMIN_EMAIL || 'admin123ecom@gmail.com').trim().toLowerCase();
+  const adminPassword = String(process.env.ADMIN_PASSWORD || 'admin123@');
+  if (adminEmail && adminPassword) {
+    const adminHash = await bcrypt.hash(adminPassword, 10);
+    await pool.query(
+      `INSERT INTO users (name, email, password, password_hash, is_verified, role, is_active)
+       VALUES ($1, $2, $3, $3, TRUE, 'super_admin', TRUE)
+       ON CONFLICT (email)
+       DO UPDATE SET
+         name = EXCLUDED.name,
+         is_verified = TRUE,
+         role = 'super_admin',
+         is_active = TRUE,
+         updated_at = NOW()`,
+      ['Admin', adminEmail, adminHash]
+    );
+  }
   await pool.query(`
     DO $$
     BEGIN
