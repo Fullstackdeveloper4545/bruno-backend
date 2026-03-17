@@ -1,5 +1,12 @@
 const { sendReportEmail } = require('../mailService');
 
+function getReportSystemStatus() {
+  return {
+    email_configured: Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS),
+    email_from: process.env.EMAIL_FROM || process.env.EMAIL_USER || null,
+  };
+}
+
 function nowUtcParts(now = new Date()) {
   const hh = String(now.getUTCHours()).padStart(2, '0');
   const mm = String(now.getUTCMinutes()).padStart(2, '0');
@@ -122,6 +129,13 @@ async function runSchedule(pool, schedule) {
     `UPDATE report_schedules SET last_sent_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1`,
     [schedule.id]
   );
+
+  return {
+    schedule_id: schedule.id,
+    recipient_email: schedule.recipient_email,
+    store_name: summary.store.name,
+    pending_orders: summary.orders.length,
+  };
 }
 
 async function runDueSchedules(pool, now = new Date()) {
@@ -137,12 +151,13 @@ async function runDueSchedules(pool, now = new Date()) {
   );
 
   let sent = 0;
+  const deliveries = [];
   for (const schedule of schedules.rows) {
-    await runSchedule(pool, schedule);
+    deliveries.push(await runSchedule(pool, schedule));
     sent += 1;
   }
 
-  return { sent };
+  return { sent, deliveries };
 }
 
 async function runScheduleById(pool, scheduleId) {
@@ -151,11 +166,12 @@ async function runScheduleById(pool, scheduleId) {
     throw new Error('Report schedule not found');
   }
 
-  await runSchedule(pool, result.rows[0]);
-  return { sent: 1 };
+  const delivery = await runSchedule(pool, result.rows[0]);
+  return { sent: 1, deliveries: [delivery] };
 }
 
 module.exports = {
+  getReportSystemStatus,
   runDueSchedules,
   runScheduleById,
 };

@@ -1,5 +1,5 @@
 const pool = require('../config/db');
-const { runDueSchedules, runScheduleById } = require('../services/reports/reportService');
+const { getReportSystemStatus, runDueSchedules, runScheduleById } = require('../services/reports/reportService');
 
 function isValidTimeUtc(value) {
   return /^\d{2}:\d{2}$/.test(String(value || '').trim());
@@ -33,6 +33,23 @@ async function listSchedules(req, res) {
     );
 
     res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+async function getStatus(req, res) {
+  try {
+    const schedules = await pool.query(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE is_active = true)::int AS active
+       FROM report_schedules`
+    );
+    res.json({
+      ...getReportSystemStatus(),
+      schedules_total: Number(schedules.rows[0]?.total || 0),
+      schedules_active: Number(schedules.rows[0]?.active || 0),
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -120,6 +137,7 @@ async function runNow(req, res) {
 }
 
 module.exports = {
+  getStatus,
   listSchedules,
   createSchedule,
   updateSchedule,
