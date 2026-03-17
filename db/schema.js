@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS users (
     role VARCHAR(50) NOT NULL DEFAULT 'admin' CHECK (role IN ('super_admin', 'admin', 'store_manager')),
     store_id INTEGER,
     is_active BOOLEAN DEFAULT TRUE,
+    two_factor_enabled BOOLEAN DEFAULT FALSE,
+    two_factor_secret TEXT,
+    two_factor_temp_secret TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -639,6 +642,9 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS store_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_secret TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_temp_secret TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
   await pool.query(`
     DO $$
@@ -657,6 +663,7 @@ async function ensureSchema() {
   await pool.query(`UPDATE users SET role = 'admin' WHERE role IS NULL`);
   await pool.query(`UPDATE users SET is_verified = TRUE WHERE is_verified IS NULL`);
   await pool.query(`UPDATE users SET is_active = TRUE WHERE is_active IS NULL`);
+  await pool.query(`UPDATE users SET two_factor_enabled = FALSE WHERE two_factor_enabled IS NULL`);
   await pool.query(`UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'admin'`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role SET NOT NULL`);

@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 const { sendOtpEmail } = require('../services/mailService');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 function generateOtp() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -13,6 +14,88 @@ function otpExpiryDate() {
 
 function isSixDigitOtp(value) {
   return /^\d{6}$/.test(String(value || ''));
+}
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buffer) {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+
+  for (const byte of buffer) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  }
+
+  return output;
+}
+
+function base32Decode(input) {
+  const clean = String(input || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = 0;
+  let value = 0;
+  const output = [];
+
+  for (const char of clean) {
+    const idx = BASE32_ALPHABET.indexOf(char);
+    if (idx === -1) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      output.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+
+  return Buffer.from(output);
+}
+
+function generateTwoFactorSecret() {
+  return base32Encode(crypto.randomBytes(20));
+}
+
+function generateTotpCode(secret, timestamp = Date.now()) {
+  const counter = Math.floor(timestamp / 30000);
+  const buffer = Buffer.alloc(8);
+  buffer.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
+  buffer.writeUInt32BE(counter >>> 0, 4);
+  const hmac = crypto.createHmac('sha1', base32Decode(secret)).update(buffer).digest();
+  const offset = hmac[hmac.length - 1] & 15;
+  const code = ((hmac[offset] & 127) << 24)
+    | ((hmac[offset + 1] & 255) << 16)
+    | ((hmac[offset + 2] & 255) << 8)
+    | (hmac[offset + 3] & 255);
+  return String(code % 1000000).padStart(6, '0');
+}
+
+function verifyTotpCode(secret, code) {
+  if (!secret || !isSixDigitOtp(code)) return false;
+  for (let offset = -1; offset <= 1; offset += 1) {
+    const candidate = generateTotpCode(secret, Date.now() + offset * 30000);
+    if (candidate === String(code)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getAdminEmail() {
+  return String(process.env.ADMIN_EMAIL || 'admin123ecom@gmail.com').trim().toLowerCase();
+}
+
+function buildOtpAuthUri(email, secret) {
+  const issuer = encodeURIComponent('Bruno Admin');
+  const label = encodeURIComponent(`Bruno Admin:${email}`);
+  return `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
 }
 
 
@@ -131,7 +214,7 @@ exports.verifyOtp = async (req, res) => {
 };
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, totp_code } = req.body;
     const normalizedEmail = typeof email === "string" ? email.trim() : "";
 
     if (!normalizedEmail || !password) {
@@ -168,13 +251,23 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Please verify your account first" });
     }
 
+    const isAdminLogin = normalizedEmail.toLowerCase() === getAdminEmail();
+    if (isAdminLogin && user.two_factor_enabled) {
+      if (!isSixDigitOtp(totp_code)) {
+        return res.json({ requires_2fa: true, message: 'Two-factor code required' });
+      }
+      if (!verifyTotpCode(user.two_factor_secret, totp_code)) {
+        return res.status(400).json({ message: 'Invalid two-factor code' });
+      }
+    }
+
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    res.json({ message: "Login successful", token });
+    res.json({ message: "Login successful", token, role: user.role, requires_2fa: false });
 
   } catch (error) {
     console.error(error);
@@ -346,6 +439,178 @@ exports.deactivateCustomerAccount = async (req, res) => {
     });
   } catch (error) {
     console.error('deactivateCustomerAccount error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.getAdminTwoFactorStatus = async (req, res) => {
+  try {
+    const email = getAdminEmail();
+    const result = await pool.query(
+      `SELECT email, two_factor_enabled
+       FROM users
+       WHERE LOWER(email) = $1
+       LIMIT 1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    res.json({
+      email,
+      enabled: Boolean(result.rows[0].two_factor_enabled),
+    });
+  } catch (error) {
+    console.error('getAdminTwoFactorStatus error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.setupAdminTwoFactor = async (req, res) => {
+  try {
+    const email = getAdminEmail();
+    const currentPassword = typeof req.body?.current_password === 'string' ? req.body.current_password : '';
+
+    if (!currentPassword) {
+      return res.status(400).json({ message: 'Current password is required' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, email, password, password_hash, two_factor_enabled
+       FROM users
+       WHERE LOWER(email) = $1
+       LIMIT 1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    const user = result.rows[0];
+    const storedHash = user.password || user.password_hash;
+    const isMatch = storedHash ? await bcrypt.compare(currentPassword, storedHash) : false;
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+
+    const secret = generateTwoFactorSecret();
+    await pool.query(
+      `UPDATE users
+       SET two_factor_temp_secret = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [secret, user.id]
+    );
+
+    res.json({
+      email,
+      secret,
+      otpauth_url: buildOtpAuthUri(email, secret),
+      enabled: Boolean(user.two_factor_enabled),
+    });
+  } catch (error) {
+    console.error('setupAdminTwoFactor error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.enableAdminTwoFactor = async (req, res) => {
+  try {
+    const email = getAdminEmail();
+    const code = typeof req.body?.totp_code === 'string' ? req.body.totp_code.trim() : '';
+
+    if (!isSixDigitOtp(code)) {
+      return res.status(400).json({ message: 'A valid 6-digit code is required' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, two_factor_temp_secret
+       FROM users
+       WHERE LOWER(email) = $1
+       LIMIT 1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    const user = result.rows[0];
+    if (!user.two_factor_temp_secret) {
+      return res.status(400).json({ message: 'Two-factor setup has not been started' });
+    }
+
+    if (!verifyTotpCode(user.two_factor_temp_secret, code)) {
+      return res.status(400).json({ message: 'Invalid two-factor code' });
+    }
+
+    await pool.query(
+      `UPDATE users
+       SET two_factor_enabled = TRUE,
+           two_factor_secret = two_factor_temp_secret,
+           two_factor_temp_secret = NULL,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [user.id]
+    );
+
+    res.json({ message: 'Two-factor authentication enabled', enabled: true });
+  } catch (error) {
+    console.error('enableAdminTwoFactor error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.disableAdminTwoFactor = async (req, res) => {
+  try {
+    const email = getAdminEmail();
+    const currentPassword = typeof req.body?.current_password === 'string' ? req.body.current_password : '';
+    const code = typeof req.body?.totp_code === 'string' ? req.body.totp_code.trim() : '';
+
+    if (!currentPassword) {
+      return res.status(400).json({ message: 'Current password is required' });
+    }
+    if (!isSixDigitOtp(code)) {
+      return res.status(400).json({ message: 'A valid 6-digit code is required' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, password, password_hash, two_factor_secret
+       FROM users
+       WHERE LOWER(email) = $1
+       LIMIT 1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    const user = result.rows[0];
+    const storedHash = user.password || user.password_hash;
+    const isMatch = storedHash ? await bcrypt.compare(currentPassword, storedHash) : false;
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+    if (!verifyTotpCode(user.two_factor_secret, code)) {
+      return res.status(400).json({ message: 'Invalid two-factor code' });
+    }
+
+    await pool.query(
+      `UPDATE users
+       SET two_factor_enabled = FALSE,
+           two_factor_secret = NULL,
+           two_factor_temp_secret = NULL,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [user.id]
+    );
+
+    res.json({ message: 'Two-factor authentication disabled', enabled: false });
+  } catch (error) {
+    console.error('disableAdminTwoFactor error', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
