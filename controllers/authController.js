@@ -149,6 +149,10 @@ exports.login = async (req, res) => {
 
     const user = result.rows[0];
 
+    if (user.is_active === false) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
     const storedHash = user.password || user.password_hash;
     if (!storedHash) {
       return res.status(400).json({ message: "Invalid credentials" });
@@ -312,6 +316,36 @@ exports.changePassword = async (req, res) => {
     res.json({ message: 'Password updated successfully' });
   } catch (error) {
     console.error('changePassword error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.deactivateCustomerAccount = async (req, res) => {
+  try {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET is_active = false, updated_at = NOW()
+       WHERE email = $1
+       RETURNING id, name, email, is_active`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: 'Customer account deactivated successfully',
+      user: result.rows[0],
+    });
+  } catch (error) {
+    console.error('deactivateCustomerAccount error', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

@@ -7,6 +7,7 @@ const {
   requestPasswordResetOtp,
   resetPasswordWithOtp,
   changePassword,
+  deactivateCustomerAccount,
 } = require('../controllers/authController');
 
 router.post('/register', register);
@@ -15,5 +16,6 @@ router.post('/login', login);
 router.post('/forgot-password/request', requestPasswordResetOtp);
 router.post('/forgot-password/reset', resetPasswordWithOtp);
 router.post('/change-password', changePassword);
+router.post('/customers/deactivate', deactivateCustomerAccount);
 
 module.exports = router;
