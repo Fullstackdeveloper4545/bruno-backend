@@ -417,7 +417,6 @@ async function fetchShopifyProducts(pool, settings) {
   if (!authHeaders) throw new Error('Shopify access token (api_key) is not configured');
 
   const primaryStoreId = await resolvePrimaryStoreId(pool);
-  if (!primaryStoreId) throw new Error('No active store found to assign inventory');
 
   const apiVersion = toText(settings?.shopify_api_version) || SHOPIFY_DEFAULT_API_VERSION;
   const currency = (await fetchShopifyCurrency(origin, accessToken, apiVersion)) || 'EUR';
@@ -491,7 +490,7 @@ async function fetchShopifyProducts(pool, settings) {
           category_name_pt: categoryName,
           category_name_es: categoryName,
           images,
-          inventory: [{ store_id: primaryStoreId, stock_quantity: inventoryQty }],
+          inventory: primaryStoreId ? [{ store_id: primaryStoreId, stock_quantity: inventoryQty }] : [],
         });
       }
     }
