@@ -172,6 +172,17 @@ function normalizeShopifyTitle(product, variant) {
   return `${productTitle} - ${variantTitle}`;
 }
 
+function buildShopifyAuthHeaders(apiKey) {
+  const raw = toText(apiKey);
+  if (!raw) return null;
+
+  if (raw.includes(':')) {
+    return { Authorization: `Basic ${Buffer.from(raw).toString('base64')}` };
+  }
+
+  return { 'X-Shopify-Access-Token': raw };
+}
+
 async function resolvePrimaryStoreId(pool) {
   const result = await pool.query(
     `SELECT id::text AS id
@@ -185,11 +196,13 @@ async function resolvePrimaryStoreId(pool) {
 
 async function fetchShopifyCurrency(origin, accessToken, apiVersion) {
   const url = new URL(`${origin}/admin/api/${apiVersion}/shop.json`);
+  const authHeaders = buildShopifyAuthHeaders(accessToken);
+  if (!authHeaders) return null;
   const response = await fetch(url.toString(), {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': accessToken,
+      ...authHeaders,
     },
   });
 
@@ -400,7 +413,8 @@ async function fetchShopifyProducts(pool, settings) {
   if (!origin) throw new Error('Shopify base URL is invalid');
 
   const accessToken = toText(settings?.api_key);
-  if (!accessToken) throw new Error('Shopify access token (api_key) is not configured');
+  const authHeaders = buildShopifyAuthHeaders(accessToken);
+  if (!authHeaders) throw new Error('Shopify access token (api_key) is not configured');
 
   const primaryStoreId = await resolvePrimaryStoreId(pool);
   if (!primaryStoreId) throw new Error('No active store found to assign inventory');
@@ -420,13 +434,27 @@ async function fetchShopifyProducts(pool, settings) {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': accessToken,
+        ...authHeaders,
       },
     });
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Shopify API GET ${nextUrl.pathname} failed: ${response.status} ${text}`);
+      let details = text;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.errors) details = typeof parsed.errors === 'string' ? parsed.errors : JSON.stringify(parsed.errors);
+      } catch (_) {
+        // keep raw text
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(
+          `Shopify auth failed (${response.status}). Use a Shopify Admin API access token (not API key/secret) with read_products scope. Details: ${details}`
+        );
+      }
+
+      throw new Error(`Shopify API GET ${nextUrl.pathname} failed: ${response.status} ${details}`);
     }
 
     const body = await response.json();
