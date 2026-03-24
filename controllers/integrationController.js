@@ -4,7 +4,7 @@ const { getSettings, performSync } = require('../services/integration/syncServic
 function emptyToNull(value) {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
-  return trimmed.length === 0 ? null : value;
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 function maskSettings(settings) {
