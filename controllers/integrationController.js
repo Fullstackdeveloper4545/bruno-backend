@@ -36,18 +36,33 @@ function timingSafeEqualHex(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
-function verifyShopifyHmac(query, clientSecret) {
-  const provided = firstText(query?.hmac);
-  if (!provided || !clientSecret) return false;
+function parseRawQueryString(rawQueryString) {
+  const raw = String(rawQueryString || '');
+  if (!raw) return [];
 
-  const entries = Object.entries(query || {})
+  return raw
+    .split('&')
+    .filter(Boolean)
+    .map((pair) => {
+      const index = pair.indexOf('=');
+      if (index === -1) return [pair, ''];
+      return [pair.slice(0, index), pair.slice(index + 1)];
+    });
+}
+
+function verifyShopifyHmacFromReq(req, clientSecret) {
+  if (!clientSecret) return false;
+
+  const rawQueryString = String(req?.originalUrl || '').split('?')[1] || '';
+  const pairs = parseRawQueryString(rawQueryString);
+
+  const provided = pairs.find(([key]) => key === 'hmac')?.[1] || '';
+  if (!provided) return false;
+
+  const message = pairs
     .filter(([key]) => key !== 'hmac' && key !== 'signature')
-    .map(([key, value]) => [String(key), Array.isArray(value) ? value[0] : value]);
-
-  entries.sort(([a], [b]) => a.localeCompare(b));
-
-  const message = entries
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value ?? ''))}`)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
     .join('&');
 
   const digest = crypto.createHmac('sha256', clientSecret).update(message).digest('hex');
@@ -205,7 +220,7 @@ async function shopifyOAuthCallback(req, res) {
       return res.status(400).json({ message: 'Missing shop/code/state in Shopify callback.' });
     }
 
-    if (!verifyShopifyHmac(req.query, clientSecret)) {
+    if (!verifyShopifyHmacFromReq(req, clientSecret)) {
       return res.status(401).json({ message: 'Invalid Shopify HMAC signature.' });
     }
 
