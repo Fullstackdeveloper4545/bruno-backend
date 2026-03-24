@@ -1,10 +1,27 @@
 const pool = require('../config/db');
 const { getSettings, performSync } = require('../services/integration/syncService');
 
+function emptyToNull(value) {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : value;
+}
+
+function maskSettings(settings) {
+  if (!settings || typeof settings !== 'object') return settings;
+  return {
+    ...settings,
+    api_key: '',
+    webhook_secret: '',
+    has_api_key: Boolean(settings.api_key),
+    has_webhook_secret: Boolean(settings.webhook_secret),
+  };
+}
+
 async function getIntegrationSettings(req, res) {
   try {
     const settings = await getSettings(pool);
-    res.json(settings);
+    res.json(maskSettings(settings));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -24,10 +41,17 @@ async function updateIntegrationSettings(req, res) {
            updated_at = NOW()
        WHERE id = 1
        RETURNING *`,
-      [base_url, api_key, integration_name, webhook_secret, is_active, sync_invoices]
+      [
+        emptyToNull(base_url),
+        emptyToNull(api_key),
+        emptyToNull(integration_name),
+        emptyToNull(webhook_secret),
+        is_active,
+        sync_invoices,
+      ]
     );
 
-    res.json(result.rows[0]);
+    res.json(maskSettings(result.rows[0]));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

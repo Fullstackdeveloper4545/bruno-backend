@@ -3,6 +3,7 @@ const { createExternalClient } = require('./client');
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HTML_TAG_REGEX = /<[^>]*>/g;
 const WORDPRESS_PRODUCTS_PATH_REGEX = /\/wp-json\/wc\/v3\/products/i;
+const SHOPIFY_DEFAULT_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 
 function slugify(value) {
   if (!value) return '';
@@ -117,6 +118,85 @@ function normalizeImageEntries(rawImages) {
       };
     })
     .filter(Boolean);
+}
+
+function isShopifyBaseUrl(baseUrl) {
+  const normalized = toText(baseUrl).toLowerCase();
+  if (!normalized) return false;
+  return normalized.includes('myshopify.com') || normalized.includes('shopify');
+}
+
+function normalizeShopifyOrigin(baseUrl) {
+  const raw = toText(baseUrl);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    return url.origin;
+  } catch (_) {
+    return null;
+  }
+}
+
+function extractNextLink(linkHeader) {
+  const raw = toText(linkHeader);
+  if (!raw) return null;
+
+  const parts = raw.split(',').map((part) => part.trim());
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>\s*;\s*rel=\"next\"/i);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+function buildShopifyAttributeValues(product, variant) {
+  const output = {};
+  const options = Array.isArray(product?.options) ? product.options : [];
+  const variantOptions = [variant?.option1, variant?.option2, variant?.option3];
+
+  for (let index = 0; index < options.length; index += 1) {
+    const name = toText(options[index]?.name);
+    const value = toText(variantOptions[index]);
+    if (!name || !value || value.toLowerCase() === 'default title') continue;
+    output[name] = value;
+  }
+
+  return output;
+}
+
+function normalizeShopifyTitle(product, variant) {
+  const productTitle = toText(product?.title) || 'Unnamed';
+  const variantTitle = toText(variant?.title);
+  if (!variantTitle || variantTitle.toLowerCase() === 'default title') return productTitle;
+  if (variantTitle.toLowerCase() === productTitle.toLowerCase()) return productTitle;
+  return `${productTitle} - ${variantTitle}`;
+}
+
+async function resolvePrimaryStoreId(pool) {
+  const result = await pool.query(
+    `SELECT id::text AS id
+     FROM stores
+     WHERE is_active = true
+     ORDER BY COALESCE(priority_level, 1) ASC, id ASC
+     LIMIT 1`
+  );
+  return result.rows[0]?.id || null;
+}
+
+async function fetchShopifyCurrency(origin, accessToken, apiVersion) {
+  const url = new URL(`${origin}/admin/api/${apiVersion}/shop.json`);
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': accessToken,
+    },
+  });
+
+  if (!response.ok) return null;
+  const body = await response.json();
+  const currency = body?.shop?.currency;
+  return toText(currency) ? String(currency).toUpperCase() : null;
 }
 
 function normalizeInventoryEntries(rawEntries) {
@@ -315,10 +395,94 @@ async function fetchWordPressProducts(settings) {
   return { data: { products: allRows }, source: 'wordpress' };
 }
 
-async function fetchProductsFromIntegration(settings) {
+async function fetchShopifyProducts(pool, settings) {
+  const origin = normalizeShopifyOrigin(settings?.base_url);
+  if (!origin) throw new Error('Shopify base URL is invalid');
+
+  const accessToken = toText(settings?.api_key);
+  if (!accessToken) throw new Error('Shopify access token (api_key) is not configured');
+
+  const primaryStoreId = await resolvePrimaryStoreId(pool);
+  if (!primaryStoreId) throw new Error('No active store found to assign inventory');
+
+  const apiVersion = toText(settings?.shopify_api_version) || SHOPIFY_DEFAULT_API_VERSION;
+  const currency = (await fetchShopifyCurrency(origin, accessToken, apiVersion)) || 'EUR';
+
+  const items = [];
+  let nextUrl = new URL(`${origin}/admin/api/${apiVersion}/products.json`);
+  nextUrl.searchParams.set('limit', '250');
+
+  let pageCount = 0;
+  const maxPages = 25;
+  while (nextUrl && pageCount < maxPages) {
+    pageCount += 1;
+    const response = await fetch(nextUrl.toString(), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken,
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Shopify API GET ${nextUrl.pathname} failed: ${response.status} ${text}`);
+    }
+
+    const body = await response.json();
+    const products = Array.isArray(body?.products) ? body.products : [];
+
+    for (const product of products) {
+      const productType = toText(product?.product_type);
+      const categoryName = productType || toText(product?.vendor) || null;
+      const images = normalizeImageEntries(product?.images);
+      const baseDescription = stripHtml(product?.body_html);
+      const variants = Array.isArray(product?.variants) ? product.variants : [];
+      const isActive = product?.status ? String(product.status).toLowerCase() === 'active' : true;
+
+      for (const variant of variants) {
+        const variantId = toText(variant?.id);
+        const sku = toText(variant?.sku) || (variantId ? `shopify-${variantId}` : resolveSku({ title: product?.title }));
+        const price = toNumber(variant?.price, 0) || 0;
+        const compareAt = normalizeCompareAtPrice(variant?.compare_at_price, price);
+        const inventoryQty = Math.max(0, Number(variant?.inventory_quantity || 0));
+
+        items.push({
+          sku,
+          name_pt: normalizeShopifyTitle(product, variant),
+          name_es: normalizeShopifyTitle(product, variant),
+          description_pt: baseDescription,
+          description_es: baseDescription,
+          price,
+          compare_at_price: compareAt,
+          currency,
+          attribute_values: buildShopifyAttributeValues(product, variant),
+          is_promoted: Boolean(compareAt != null && compareAt > price),
+          is_active: isActive,
+          category_slug: categoryName ? slugify(categoryName) : null,
+          category_name_pt: categoryName,
+          category_name_es: categoryName,
+          images,
+          inventory: [{ store_id: primaryStoreId, stock_quantity: inventoryQty }],
+        });
+      }
+    }
+
+    const next = extractNextLink(response.headers.get('link'));
+    nextUrl = next ? new URL(next) : null;
+  }
+
+  return { data: { products: items }, source: 'shopify' };
+}
+
+async function fetchProductsFromIntegration(pool, settings) {
   const baseUrl = toText(settings?.base_url);
   if (!baseUrl) {
     throw new Error('Integration base URL is not configured');
+  }
+
+  if (isShopifyBaseUrl(baseUrl) || toText(settings?.integration_name).toLowerCase() === 'shopify') {
+    return fetchShopifyProducts(pool, settings);
   }
 
   if (isWordPressBaseUrl(baseUrl)) {
@@ -575,7 +739,7 @@ async function performSync(pool, mode, payload) {
   let data = payload;
   let source = 'payload';
   if (!data) {
-    const fetched = await fetchProductsFromIntegration(settings);
+    const fetched = await fetchProductsFromIntegration(pool, settings);
     data = fetched.data;
     source = fetched.source;
   }
