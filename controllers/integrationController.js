@@ -1,5 +1,58 @@
 const pool = require('../config/db');
 const { getSettings, performSync } = require('../services/integration/syncService');
+const crypto = require('crypto');
+
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function getPublicBaseUrl(req) {
+  const configured = firstText(process.env.APP_PUBLIC_URL);
+  if (configured) return configured.replace(/\/+$/, '');
+
+  const forwardedProto = firstText(req.headers['x-forwarded-proto']);
+  const forwardedHost = firstText(req.headers['x-forwarded-host']);
+  const host = forwardedHost || firstText(req.headers.host) || 'localhost:5000';
+  const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol || 'http';
+  return `${proto}://${host}`.replace(/\/+$/, '');
+}
+
+function normalizeShopifyShop(value) {
+  const raw = firstText(value);
+  if (!raw) return null;
+  const withoutProto = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (!withoutProto) return null;
+  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(withoutProto)) return null;
+  return withoutProto.toLowerCase();
+}
+
+function timingSafeEqualHex(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function verifyShopifyHmac(query, clientSecret) {
+  const provided = firstText(query?.hmac);
+  if (!provided || !clientSecret) return false;
+
+  const entries = Object.entries(query || {})
+    .filter(([key]) => key !== 'hmac' && key !== 'signature')
+    .map(([key, value]) => [String(key), Array.isArray(value) ? value[0] : value]);
+
+  entries.sort(([a], [b]) => a.localeCompare(b));
+
+  const message = entries
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value ?? ''))}`)
+    .join('&');
+
+  const digest = crypto.createHmac('sha256', clientSecret).update(message).digest('hex');
+  return timingSafeEqualHex(digest, provided);
+}
 
 function emptyToNull(value) {
   if (typeof value !== 'string') return value;
@@ -97,6 +150,122 @@ async function getSyncLogs(req, res) {
   }
 }
 
+async function startShopifyOAuth(req, res) {
+  try {
+    const clientId = firstText(process.env.SHOPIFY_CLIENT_ID);
+    const clientSecret = firstText(process.env.SHOPIFY_CLIENT_SECRET);
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ message: 'Shopify OAuth is not configured (missing SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET).' });
+    }
+
+    const shop = normalizeShopifyShop(req.query?.shop);
+    if (!shop) {
+      return res.status(400).json({ message: 'Invalid Shopify shop domain. Use something like your-store.myshopify.com.' });
+    }
+
+    const returnTo = firstText(req.query?.return_to);
+    const state = crypto.randomBytes(16).toString('hex');
+    await pool.query(
+      `UPDATE integration_settings
+       SET oauth_state = $1,
+           oauth_return_to = $2,
+           shopify_shop = $3,
+           updated_at = NOW()
+       WHERE id = 1`,
+      [state, returnTo || null, shop]
+    );
+
+    const callbackUrl = `${getPublicBaseUrl(req)}/api/integration/shopify/oauth/callback`;
+    const scopes = firstText(process.env.SHOPIFY_SCOPES) || 'read_products';
+
+    const url = new URL(`https://${shop}/admin/oauth/authorize`);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('scope', scopes);
+    url.searchParams.set('redirect_uri', callbackUrl);
+    url.searchParams.set('state', state);
+
+    res.redirect(url.toString());
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+async function shopifyOAuthCallback(req, res) {
+  try {
+    const clientId = firstText(process.env.SHOPIFY_CLIENT_ID);
+    const clientSecret = firstText(process.env.SHOPIFY_CLIENT_SECRET);
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ message: 'Shopify OAuth is not configured (missing SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET).' });
+    }
+
+    const shop = normalizeShopifyShop(req.query?.shop);
+    const code = firstText(req.query?.code);
+    const state = firstText(req.query?.state);
+    if (!shop || !code || !state) {
+      return res.status(400).json({ message: 'Missing shop/code/state in Shopify callback.' });
+    }
+
+    if (!verifyShopifyHmac(req.query, clientSecret)) {
+      return res.status(401).json({ message: 'Invalid Shopify HMAC signature.' });
+    }
+
+    const current = await getSettings(pool);
+    if (!current?.oauth_state || current.oauth_state !== state) {
+      return res.status(401).json({ message: 'Invalid OAuth state.' });
+    }
+
+    const tokenResponse = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+      }),
+    });
+
+    const tokenText = await tokenResponse.text();
+    if (!tokenResponse.ok) {
+      return res.status(500).json({ message: `Shopify token exchange failed: ${tokenResponse.status} ${tokenText}` });
+    }
+
+    let tokenJson;
+    try {
+      tokenJson = JSON.parse(tokenText);
+    } catch (_) {
+      return res.status(500).json({ message: `Shopify token exchange returned invalid JSON: ${tokenText}` });
+    }
+
+    const accessToken = firstText(tokenJson?.access_token);
+    if (!accessToken) {
+      return res.status(500).json({ message: 'Shopify token exchange did not return an access_token.' });
+    }
+
+    await pool.query(
+      `UPDATE integration_settings
+       SET base_url = $1,
+           api_key = $2,
+           integration_name = 'shopify',
+           is_active = true,
+           oauth_state = NULL,
+           updated_at = NOW()
+       WHERE id = 1`,
+      [`https://${shop}`, accessToken]
+    );
+
+    const redirectTarget = firstText(current?.oauth_return_to) || `${process.env.ADMIN_PUBLIC_URL || ''}`;
+    if (redirectTarget) {
+      const url = new URL(redirectTarget);
+      url.searchParams.set('shopify', 'connected');
+      return res.redirect(url.toString());
+    }
+
+    res.send('Shopify connected. You can close this window.');
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
 async function getMockProductsSync(req, res) {
   try {
     const storesResult = await pool.query(
@@ -177,5 +346,7 @@ module.exports = {
   manualSync,
   webhookSync,
   getSyncLogs,
+  startShopifyOAuth,
+  shopifyOAuthCallback,
   getMockProductsSync,
 };
