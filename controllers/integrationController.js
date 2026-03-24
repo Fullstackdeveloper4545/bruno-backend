@@ -175,6 +175,43 @@ async function getSyncLogs(req, res) {
   }
 }
 
+async function getShopifyOAuthInfo(req, res) {
+  try {
+    const clientId = firstText(process.env.SHOPIFY_CLIENT_ID);
+    const clientSecretConfigured = Boolean(firstText(process.env.SHOPIFY_CLIENT_SECRET));
+    const scopes = firstText(process.env.SHOPIFY_SCOPES) || 'read_products';
+    const appPublicUrl = firstText(process.env.APP_PUBLIC_URL) || null;
+    const callbackUrl = `${getPublicBaseUrl(req)}/api/integration/shopify/oauth/callback`;
+
+    const shop = normalizeShopifyShop(req.query?.shop);
+    let authorizeUrl = null;
+    if (shop && clientId) {
+      const url = new URL(`https://${shop}/admin/oauth/authorize`);
+      url.searchParams.set('client_id', clientId);
+      url.searchParams.set('scope', scopes);
+      url.searchParams.set('redirect_uri', callbackUrl);
+      url.searchParams.set('state', 'debug');
+      authorizeUrl = url.toString();
+    }
+
+    res.json({
+      shop,
+      shop_expected_format: 'your-store.myshopify.com',
+      callback_url: callbackUrl,
+      app_public_url_env: appPublicUrl,
+      shopify_client_id_configured: Boolean(clientId),
+      shopify_client_id: clientId || null,
+      shopify_client_secret_configured: clientSecretConfigured,
+      shopify_scopes: scopes,
+      authorize_url_preview: authorizeUrl,
+      note:
+        'Client secret is never returned. If authorize_url_preview client_id does not match your Shopify app Client ID, your backend env vars are pointing to a different app and HMAC verification will fail.',
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
 async function startShopifyOAuth(req, res) {
   try {
     const clientId = firstText(process.env.SHOPIFY_CLIENT_ID);
@@ -377,6 +414,7 @@ module.exports = {
   manualSync,
   webhookSync,
   getSyncLogs,
+  getShopifyOAuthInfo,
   startShopifyOAuth,
   shopifyOAuthCallback,
   getMockProductsSync,
