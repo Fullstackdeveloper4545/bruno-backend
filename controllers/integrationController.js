@@ -30,8 +30,8 @@ function normalizeShopifyShop(value) {
 }
 
 function timingSafeEqualHex(a, b) {
-  const left = Buffer.from(String(a || ''), 'utf8');
-  const right = Buffer.from(String(b || ''), 'utf8');
+  const left = Buffer.from(String(a || '').toLowerCase(), 'utf8');
+  const right = Buffer.from(String(b || '').toLowerCase(), 'utf8');
   if (left.length !== right.length) return false;
   return crypto.timingSafeEqual(left, right);
 }
@@ -59,14 +59,24 @@ function verifyShopifyHmacFromReq(req, clientSecret) {
   const provided = pairs.find(([key]) => key === 'hmac')?.[1] || '';
   if (!provided) return false;
 
-  const message = pairs
+  const rawMessage = pairs
     .filter(([key]) => key !== 'hmac' && key !== 'signature')
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
 
-  const digest = crypto.createHmac('sha256', clientSecret).update(message).digest('hex');
-  return timingSafeEqualHex(digest, provided);
+  const rawDigest = crypto.createHmac('sha256', clientSecret).update(rawMessage).digest('hex');
+  if (timingSafeEqualHex(rawDigest, provided)) return true;
+
+  const decodedEntries = Object.entries(req.query || {})
+    .filter(([key]) => key !== 'hmac' && key !== 'signature')
+    .map(([key, value]) => [String(key), Array.isArray(value) ? value[0] : value])
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value ?? ''))}`)
+    .join('&');
+
+  const decodedDigest = crypto.createHmac('sha256', clientSecret).update(decodedEntries).digest('hex');
+  return timingSafeEqualHex(decodedDigest, provided);
 }
 
 function emptyToNull(value) {
@@ -217,11 +227,17 @@ async function shopifyOAuthCallback(req, res) {
     const code = firstText(req.query?.code);
     const state = firstText(req.query?.state);
     if (!shop || !code || !state) {
-      return res.status(400).json({ message: 'Missing shop/code/state in Shopify callback.' });
+      return res.status(400).json({
+        message:
+          'Missing shop/code/state in Shopify callback. Make sure you start the flow from Bruno via /api/integration/shopify/oauth/start (Connect Shopify button). If you opened the app inside Shopify admin, your Shopify App URL might be pointing to the callback URL; set App URL to your app frontend and keep the callback only in the allowed redirect URLs list.',
+      });
     }
 
     if (!verifyShopifyHmacFromReq(req, clientSecret)) {
-      return res.status(401).json({ message: 'Invalid Shopify HMAC signature.' });
+      return res.status(401).json({
+        message:
+          'Invalid Shopify HMAC signature. This usually means SHOPIFY_CLIENT_SECRET does not match the app Secret for this install (or the callback URL is routed through something that rewrites the query string).',
+      });
     }
 
     const current = await getSettings(pool);
