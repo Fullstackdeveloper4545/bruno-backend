@@ -722,6 +722,8 @@ async function ensureSchema() {
        ON CONFLICT (email)
        DO UPDATE SET
          name = EXCLUDED.name,
+         password = EXCLUDED.password,
+         password_hash = EXCLUDED.password_hash,
          is_verified = TRUE,
          role = 'super_admin',
          is_active = TRUE,
