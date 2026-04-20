@@ -85,6 +85,27 @@ function emptyToNull(value) {
   return trimmed.length === 0 ? null : trimmed;
 }
 
+function isLikelyShopifySettings({ base_url, integration_name }) {
+  const normalizedBaseUrl = firstText(base_url)?.toLowerCase() || '';
+  const normalizedName = firstText(integration_name)?.toLowerCase() || '';
+  return (
+    normalizedBaseUrl.includes('myshopify.com') ||
+    normalizedBaseUrl.includes('shopify') ||
+    normalizedName.includes('shopify')
+  );
+}
+
+function validateShopifyAccessToken(apiKey) {
+  const raw = firstText(apiKey);
+  if (!raw) return;
+
+  if (raw.includes(':')) {
+    throw new Error(
+      'For Shopify, save a store Admin API access token only. Do not paste Client ID, Client Secret, or client_id:client_secret.'
+    );
+  }
+}
+
 function maskSettings(settings) {
   if (!settings || typeof settings !== 'object') return settings;
   return {
@@ -108,6 +129,9 @@ async function getIntegrationSettings(req, res) {
 async function updateIntegrationSettings(req, res) {
   try {
     const { base_url, api_key, integration_name, webhook_secret, is_active, sync_invoices } = req.body;
+    if (isLikelyShopifySettings({ base_url, integration_name })) {
+      validateShopifyAccessToken(api_key);
+    }
     const result = await pool.query(
       `UPDATE integration_settings
        SET base_url = COALESCE($1, base_url),
