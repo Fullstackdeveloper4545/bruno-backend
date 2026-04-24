@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS stores (
     email VARCHAR(150),
     phone VARCHAR(50),
     address TEXT,
+    image_url TEXT,
     region_district VARCHAR(100),
     priority_level INTEGER DEFAULT 1,
     city VARCHAR(100),
@@ -375,6 +376,7 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS is_promoted BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE products ALTER COLUMN base_price SET DEFAULT 0`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+  await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS image_url TEXT`);
   await pool.query(`ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMP`);
   await pool.query(`
     UPDATE report_schedules

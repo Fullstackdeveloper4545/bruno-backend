@@ -47,7 +47,8 @@ async function getProducts(req, res) {
 
     res.json(products);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.warn('getProducts fallback:', error.message);
+    res.json([]);
   }
 }
 
@@ -374,7 +375,8 @@ async function getCategories(req, res) {
     `);
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.warn('getCategories fallback:', error.message);
+    res.json([]);
   }
 }
 

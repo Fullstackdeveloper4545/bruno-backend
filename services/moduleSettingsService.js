@@ -67,20 +67,29 @@ async function loadOverrides(force = false) {
     return cache.overrides;
   }
 
-  const result = await pool.query(
-    `SELECT value
-     FROM app_settings
-     WHERE key = $1
-     LIMIT 1`,
-    [SETTINGS_KEY]
-  );
+  try {
+    const result = await pool.query(
+      `SELECT value
+       FROM app_settings
+       WHERE key = $1
+       LIMIT 1`,
+      [SETTINGS_KEY]
+    );
 
-  const overrides = sanitizeOverrides(result.rows[0]?.value);
-  cache = {
-    loadedAt: Date.now(),
-    overrides,
-  };
-  return overrides;
+    const overrides = sanitizeOverrides(result.rows[0]?.value);
+    cache = {
+      loadedAt: Date.now(),
+      overrides,
+    };
+    return overrides;
+  } catch (error) {
+    console.warn('loadOverrides fallback:', error.message);
+    cache = {
+      loadedAt: Date.now(),
+      overrides: {},
+    };
+    return {};
+  }
 }
 
 function mergeModules(overrides) {

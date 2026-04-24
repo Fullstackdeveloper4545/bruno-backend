@@ -30,7 +30,8 @@ async function listStores(req, res) {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.warn('listStores fallback:', error.message);
+    res.json([]);
   }
 }
 
@@ -42,6 +43,7 @@ async function createStore(req, res) {
       region_district,
       priority_level = 1,
       address,
+      image_url,
       is_active = true,
       regions = [],
     } = req.body;
@@ -49,6 +51,7 @@ async function createStore(req, res) {
     const normalizedName = String(name || '').trim();
     const normalizedDistrict = String(region_district || '').trim();
     const normalizedAddress = String(address || '').trim();
+    const normalizedImageUrl = String(image_url || '').trim();
     const normalizedPriority = Number(priority_level);
     const normalizedRegions = parseRegions(regions);
 
@@ -67,10 +70,10 @@ async function createStore(req, res) {
 
     await client.query('BEGIN');
     const storeResult = await client.query(
-      `INSERT INTO stores (name, region_district, priority_level, address, is_active)
-       VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO stores (name, region_district, priority_level, address, image_url, is_active)
+       VALUES ($1,$2,$3,$4,$5,$6)
        RETURNING *`,
-      [normalizedName, normalizedDistrict, normalizedPriority, normalizedAddress, Boolean(is_active)]
+      [normalizedName, normalizedDistrict, normalizedPriority, normalizedAddress, normalizedImageUrl || null, Boolean(is_active)]
     );
 
     const store = storeResult.rows[0];
@@ -100,8 +103,10 @@ async function updateStore(req, res) {
       return res.status(400).json({ message: 'Invalid store id' });
     }
 
-    const { name, region_district, priority_level, address, is_active, regions } = req.body;
+    const { name, region_district, priority_level, address, image_url, is_active, regions } = req.body;
     const normalizedRegions = Array.isArray(regions) ? parseRegions(regions) : null;
+    const hasImageUrl = Object.prototype.hasOwnProperty.call(req.body || {}, 'image_url');
+    const normalizedImageUrl = hasImageUrl ? String(image_url || '').trim() : null;
 
     await client.query('BEGIN');
     const result = await client.query(
@@ -110,10 +115,11 @@ async function updateStore(req, res) {
            region_district = COALESCE($2, region_district),
            priority_level = COALESCE($3, priority_level),
            address = COALESCE($4, address),
-           is_active = COALESCE($5, is_active)
-       WHERE id::text = $6::text
+           image_url = CASE WHEN $5 THEN $6 ELSE image_url END,
+           is_active = COALESCE($7, is_active)
+       WHERE id::text = $8::text
        RETURNING *`,
-      [name, region_district, priority_level, address, is_active, id]
+      [name, region_district, priority_level, address, hasImageUrl, normalizedImageUrl || null, is_active, id]
     );
 
     if (!result.rows[0]) {
@@ -155,6 +161,37 @@ async function deleteStore(req, res) {
   }
 }
 
+async function updateStoreImage(req, res) {
+  try {
+    const id = parseStoreId(req.params.id);
+    const imageUrl = String(req.body?.image_url || '').trim();
+
+    if (!id) {
+      return res.status(400).json({ message: 'Invalid store id' });
+    }
+
+    if (!imageUrl) {
+      return res.status(400).json({ message: 'image_url is required' });
+    }
+
+    const result = await pool.query(
+      `UPDATE stores
+       SET image_url = $1,
+           updated_at = NOW()
+       WHERE id::text = $2::text
+       RETURNING *`,
+      [imageUrl, id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Store not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
 async function getRoutingConfig(req, res) {
   try {
     const result = await pool.query(`SELECT value FROM app_settings WHERE key = 'routing_mode'`);
@@ -191,6 +228,7 @@ module.exports = {
   listStores,
   createStore,
   updateStore,
+  updateStoreImage,
   deleteStore,
   getRoutingConfig,
   setRoutingConfig,

@@ -25,8 +25,14 @@ const uploadRoutes = require('../routes/uploadRoutes');
 const systemRoutes = require('../routes/systemRoutes');
 
 const app = express();
-
-app.use(cors());
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
+  })
+);
 app.use(express.json());
 app.use(loggerMiddleware);
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
@@ -49,6 +55,7 @@ if (featureFlags.modules.report) app.use('/api/reports', moduleGate('report'), r
 if (featureFlags.modules.language) app.use('/api/languages', languageRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/blog', blogRoutes);
+app.use('/api/upload', uploadRoutes);
 app.use('/api/uploads', uploadRoutes);
 
 app.get('/', (req, res) => {

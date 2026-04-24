@@ -894,7 +894,36 @@ async function getDashboardSummary(req, res) {
       limit,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.warn('getDashboardSummary fallback:', error.message);
+    res.json({
+      kpis: {
+        total_revenue: 0,
+        today_revenue: 0,
+        month_revenue: 0,
+        year_revenue: 0,
+        total_orders: 0,
+        pending_orders: 0,
+        ready_to_ship_orders: 0,
+        failed_payments: 0,
+        revenue_vs_last_month_pct: 0,
+        total_orders_vs_prev_7d_pct: 0,
+        pending_orders_vs_prev_7d_pct: 0,
+        ready_to_ship_vs_prev_7d_pct: 0,
+        failed_payments_vs_prev_7d_pct: 0,
+      },
+      orders_per_store: [],
+      orders_7d: [],
+      revenue_7d: [],
+      revenue_30d: [],
+      low_stock_products: [],
+      ctt_webhook: {
+        last_event_at: null,
+        last_status: null,
+      },
+      threshold: Number.isFinite(Number(req.query?.threshold)) ? Math.floor(Number(req.query.threshold)) : 5,
+      limit: Number.isFinite(Number(req.query?.limit)) ? Math.floor(Number(req.query.limit)) : 10,
+      fallback: true,
+    });
   }
 }
 

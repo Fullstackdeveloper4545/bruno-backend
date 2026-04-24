@@ -6,6 +6,7 @@ router.get('/routing/config', controller.getRoutingConfig);
 router.put('/routing/config', controller.setRoutingConfig);
 router.get('/', controller.listStores);
 router.post('/', controller.createStore);
+router.post('/:id/image', controller.updateStoreImage);
 router.put('/:id', controller.updateStore);
 router.delete('/:id', controller.deleteStore);
 
