@@ -1,0 +1,15 @@
+const express = require('express');
+const controller = require('../controllers/integrationController');
+const router = express.Router();
+
+router.get('/settings', controller.getIntegrationSettings);
+router.put('/settings', controller.updateIntegrationSettings);
+router.get('/mock/products-sync', controller.getMockProductsSync);
+router.post('/sync/manual', controller.manualSync);
+router.get('/shopify/oauth/info', controller.getShopifyOAuthInfo);
+router.get('/shopify/oauth/start', controller.startShopifyOAuth);
+router.get('/shopify/oauth/callback', controller.shopifyOAuthCallback);
+router.post('/webhook', controller.webhookSync);
+router.get('/logs', controller.getSyncLogs);
+
+module.exports = router;
