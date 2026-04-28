@@ -16,6 +16,51 @@ function slugify(value) {
     .replace(/^-+|-+$/g, '');
 }
 
+function normalizeGenderOptions(value) {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .map((entry) => String(entry || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (normalized.includes('none') || normalized.includes('nenhum') || normalized.includes('other')) return [];
+  const mapped = normalized.map((entry) => {
+    if (['male', 'homem', 'men', 'man'].includes(entry)) return 'male';
+    if (['female', 'mulher', 'women', 'woman'].includes(entry)) return 'female';
+    return null;
+  }).filter(Boolean);
+  return Array.from(new Set(mapped));
+}
+
+function extractGenderValues(variants) {
+  const entries = Array.isArray(variants) ? variants : [];
+  const values = [];
+  for (const variant of entries) {
+    const attrs = variant?.attribute_values;
+    const parsed = attrs && typeof attrs === 'object' ? attrs : null;
+    if (!parsed) continue;
+    for (const [key, val] of Object.entries(parsed)) {
+      const safeKey = String(key || '').toLowerCase();
+      if (!['gender', 'genero', 'gênero', 'sexo'].includes(safeKey)) continue;
+      if (val == null) continue;
+      values.push(String(val));
+    }
+  }
+  return values;
+}
+
+function genderMatches(values, selectedGender) {
+  const selected = String(selectedGender || '').trim().toLowerCase();
+  if (!selected) return true;
+  const tokens = selected === 'male'
+    ? ['male', 'homem', 'man', 'men']
+    : selected === 'female'
+      ? ['female', 'mulher', 'woman', 'women']
+      : ['unisex', 'unisexo'];
+  return values.some((value) => {
+    const normalized = String(value || '').toLowerCase();
+    return tokens.some((token) => normalized.includes(token));
+  });
+}
+
 async function resolveCategoryNames(categoryId) {
   if (!categoryId) return { category_name_pt: null, category_name_es: null };
   const result = await pool.query(`SELECT name_pt, name_es FROM categories WHERE id = $1`, [categoryId]);
@@ -27,6 +72,11 @@ async function resolveCategoryNames(categoryId) {
 
 async function getProducts(req, res) {
   try {
+    const gender = String(req.query.gender || '').trim();
+    const search = String(req.query.q || '').trim();
+    const hasSearch = Boolean(search);
+    const searchValue = hasSearch ? `%${search}%` : null;
+
     const result = await pool.query(`
       SELECT
         p.*,
@@ -35,14 +85,30 @@ async function getProducts(req, res) {
         c.slug AS category_slug
       FROM products p
       LEFT JOIN categories c ON c.id = p.category_id
+      ${hasSearch ? `WHERE (
+        p.name_pt ILIKE $1
+        OR p.name_es ILIKE $1
+        OR p.sku ILIKE $1
+        OR COALESCE(c.name_pt, p.category_name_pt) ILIKE $1
+        OR COALESCE(c.name_es, p.category_name_es) ILIKE $1
+      )` : ''}
       ORDER BY p.created_at DESC NULLS LAST, p.id DESC
-    `);
+    `, hasSearch ? [searchValue] : []);
 
     const products = [];
     for (const product of result.rows) {
       const variants = await pool.query(`SELECT * FROM product_variants WHERE product_id = $1 ORDER BY created_at ASC, id ASC`, [product.id]);
       const images = await pool.query(`SELECT * FROM product_images WHERE product_id = $1 ORDER BY position ASC, id ASC`, [product.id]);
       products.push({ ...product, variants: variants.rows, images: images.rows });
+    }
+
+    if (gender) {
+      const filtered = products.filter((product) => {
+        const genderValues = extractGenderValues(product?.variants || []);
+        return genderMatches(genderValues, gender);
+      });
+      res.json(filtered);
+      return;
     }
 
     res.json(products);
@@ -382,16 +448,17 @@ async function getCategories(req, res) {
 
 async function createCategory(req, res) {
   try {
-    const { name_pt, name_es, parent_id, is_active = true, slug, image_url } = req.body;
+    const { name_pt, name_es, parent_id, is_active = true, slug, image_url, gender_options } = req.body;
     const resolvedSlug = slugify(slug || name_pt || name_es);
     if (!resolvedSlug) {
       return res.status(400).json({ message: 'name_pt or name_es is required' });
     }
+    const resolvedGenderOptions = normalizeGenderOptions(gender_options);
     const result = await pool.query(
-      `INSERT INTO categories (slug, name_pt, name_es, parent_id, image_url, is_active, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,NOW())
+      `INSERT INTO categories (slug, name_pt, name_es, parent_id, image_url, gender_options, is_active, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,NOW())
        RETURNING *`,
-      [resolvedSlug, name_pt || null, name_es || null, parent_id || null, image_url || null, is_active]
+      [resolvedSlug, name_pt || null, name_es || null, parent_id || null, image_url || null, JSON.stringify(resolvedGenderOptions), is_active]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -402,11 +469,13 @@ async function createCategory(req, res) {
 async function updateCategory(req, res) {
   try {
     const id = req.params.id;
-    const { name_pt, name_es, parent_id, is_active, slug, image_url } = req.body;
+    const { name_pt, name_es, parent_id, is_active, slug, image_url, gender_options } = req.body;
     const resolvedSlug = slug ? slugify(slug) : null;
     if (slug && !resolvedSlug) {
       return res.status(400).json({ message: 'slug is invalid' });
     }
+    const resolvedGenderOptions = normalizeGenderOptions(gender_options);
+    const hasGender = Object.prototype.hasOwnProperty.call(req.body, 'gender_options');
     const result = await pool.query(
       `UPDATE categories
        SET name_pt = COALESCE($1, name_pt),
@@ -414,11 +483,21 @@ async function updateCategory(req, res) {
            slug = COALESCE($3, slug),
            parent_id = COALESCE($4, parent_id),
            image_url = COALESCE($5, image_url),
-           is_active = COALESCE($6, is_active),
+           gender_options = COALESCE($6, gender_options),
+           is_active = COALESCE($7, is_active),
            updated_at = NOW()
-       WHERE id = $7
+       WHERE id = $8
        RETURNING *`,
-      [name_pt, name_es, resolvedSlug, parent_id, image_url, is_active, id]
+      [
+        name_pt,
+        name_es,
+        resolvedSlug,
+        parent_id,
+        image_url,
+        hasGender ? JSON.stringify(resolvedGenderOptions) : null,
+        is_active,
+        id,
+      ]
     );
 
     if (!result.rows[0]) {

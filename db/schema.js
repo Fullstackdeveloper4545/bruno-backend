@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS categories (
     name_pt VARCHAR(150),
     name_es VARCHAR(150),
     image_url TEXT,
+  gender_options JSONB DEFAULT '[]'::jsonb,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -396,6 +397,7 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_pt VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS name_es VARCHAR(150)`);
   await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS image_url TEXT`);
+  await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS gender_options JSONB DEFAULT '[]'::jsonb`);
   await pool.query(`ALTER TABLE integration_settings ADD COLUMN IF NOT EXISTS integration_name TEXT`);
   await pool.query(`ALTER TABLE integration_settings ADD COLUMN IF NOT EXISTS shopify_shop TEXT`);
   await pool.query(`ALTER TABLE integration_settings ADD COLUMN IF NOT EXISTS shopify_api_version TEXT`);
